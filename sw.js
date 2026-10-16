@@ -1,4 +1,4 @@
-const CACHE = 'vistoria-v1';
+const CACHE = 'vistoria-v2';
 const ASSETS = [
   './', './index.html', './app.js', './core.js', './jspdf.umd.min.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png'
@@ -16,9 +16,18 @@ self.addEventListener('activate', e => {
   );
 });
 
+// Rede primeiro (pega atualizações quando há internet), cache como reserva offline.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).catch(() => caches.match('./index.html')))
+    fetch(e.request)
+      .then(res => {
+        if (res && res.ok && new URL(e.request.url).origin === location.origin) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request).then(hit => hit || caches.match('./index.html')))
   );
 });

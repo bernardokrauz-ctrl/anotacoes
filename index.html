@@ -55,7 +55,7 @@
 
   #dock{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);
     padding:10px 12px calc(env(safe-area-inset-bottom) + 10px);display:flex;flex-direction:column;gap:8px}
-  #live{min-height:20px;font-size:14px;color:var(--teal-d);font-style:italic;padding:0 4px;word-break:break-word}
+  #live{min-height:20px;max-height:96px;overflow-y:auto;font-size:14px;color:var(--teal-d);font-style:italic;padding:0 4px;word-break:break-word}
   #row{display:flex;gap:8px;align-items:center}
   #txt{flex:1;min-width:0;font:inherit;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;outline:none;background:#fff}
   #txt:focus{border-color:var(--teal)}

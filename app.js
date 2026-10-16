@@ -46,7 +46,7 @@
     el.innerHTML = S.sectors.map(s =>
       `<button class="chip${s === S.currentSector ? ' on' : ''}" data-s="${esc(s)}">${esc(s)}</button>`
     ).join('') + '<button class="chip add" data-add="1">+ Setor</button>';
-    $('hint').innerHTML = `Setor atual: <b>${esc(S.currentSector)}</b> — ou diga <b>"setor acabamento"</b> e continue falando.`;
+    $('hint').innerHTML = `Setor atual: <b>${esc(S.currentSector)}</b> — ou comece falando <b>"setor acabamento…"</b>. Cada gravação vira uma nota.`;
   }
 
   function renderList() {
@@ -54,7 +54,7 @@
     $('title').value = v.title;
     const groups = C.groupItems(v.items, S.sectors);
     if (!groups.length) {
-      $('list').innerHTML = '<div class="empty"><big>🎤</big>Toque no microfone e fale.<br>Cada pausa vira uma nota no setor atual.</div>';
+      $('list').innerHTML = '<div class="empty"><big>🎤</big>Toque no microfone, fale tudo o que quiser<br>e toque de novo para parar.<br>A gravação inteira vira uma nota.</div>';
       return;
     }
     const opts = sel => S.sectors.concat(S.sectors.includes(sel) ? [] : [sel])
@@ -88,13 +88,8 @@
     S.currentSector = name;
   }
 
-  let lastSeg = '', lastSegAt = 0;
+  // Recebe o texto completo de uma gravação (ou digitado) e cria a nota.
   function handleSpeech(raw) {
-    const now = Date.now();
-    const key = C.norm(raw).trim();
-    if (key && key === lastSeg && now - lastSegAt < 3000) return; // evita duplicata do Android
-    lastSeg = key; lastSegAt = now;
-
     const r = C.parseSegment(raw, S.sectors);
     if (r.sector) {
       setSector(r.sector);
@@ -113,13 +108,20 @@
 
   // ---------- reconhecimento de voz ----------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, recording = false, wake = null;
+  let rec = null, recording = false, pendingFinish = false, finishT = null, wake = null;
+  let buf = '';   // texto das partes já encerradas desta gravação
+  let part = '';  // texto da parte em andamento
 
   function setRec(on) {
     recording = on;
     $('mic').classList.toggle('rec', on);
     $('mic').textContent = on ? '⏹' : '🎤';
-    if (!on) $('live').textContent = '';
+  }
+
+  function showLive() {
+    const t = (buf + ' ' + part).trim();
+    $('live').textContent = t ? '🎙 ' + t : '';
+    $('live').scrollTop = $('live').scrollHeight;
   }
 
   async function keepAwake(on) {
@@ -129,8 +131,21 @@
     } catch (e) { /* ok */ }
   }
 
+  // Fecha a gravação: junta tudo e cria UMA nota.
+  function finish() {
+    if (!pendingFinish) return;
+    pendingFinish = false;
+    clearTimeout(finishT);
+    const text = (buf + ' ' + part).replace(/\s+/g, ' ').trim();
+    buf = ''; part = '';
+    $('live').textContent = '';
+    if (text) handleSpeech(text);
+    else toast('Nada foi captado');
+  }
+
   function startRec() {
     if (!SR) { toast('Sem reconhecimento de voz neste navegador'); return; }
+    buf = ''; part = ''; pendingFinish = false;
     rec = new SR();
     rec.lang = 'pt-BR';
     rec.continuous = true;
@@ -138,37 +153,43 @@
     rec.maxAlternatives = 1;
 
     rec.onresult = e => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) handleSpeech(r[0].transcript);
-        else interim += r[0].transcript;
-      }
-      $('live').textContent = interim ? '… ' + interim : '';
+      const list = [];
+      for (let i = 0; i < e.results.length; i++) list.push(e.results[i][0].transcript);
+      part = C.mergeResults(list);
+      showLive();
     };
     rec.onerror = e => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        setRec(false); keepAwake(false);
+        recording = false; pendingFinish = false; buf = ''; part = '';
+        setRec(false); keepAwake(false); $('live').textContent = '';
         toast('Permita o microfone nas configurações do site');
       } else if (e.error === 'network') {
         toast('Sem internet: a transcrição precisa de conexão');
       }
     };
     rec.onend = () => {
+      // O Chrome encerra sozinho após alguns segundos de silêncio: guarda a parte e reinicia.
+      buf = (buf + ' ' + part).trim();
+      part = '';
       if (recording) { try { rec.start(); } catch (err) { /* já iniciando */ } }
+      else finish();
     };
 
     try {
       rec.start();
       setRec(true);
       keepAwake(true);
+      showLive();
     } catch (err) { toast('Não consegui iniciar o microfone'); }
   }
 
   function stopRec() {
     setRec(false);
     keepAwake(false);
+    pendingFinish = true;
     try { rec && rec.stop(); } catch (e) { /* ok */ }
+    clearTimeout(finishT);
+    finishT = setTimeout(finish, 1500); // garantia, caso o onend demore
   }
 
   document.addEventListener('visibilitychange', () => {

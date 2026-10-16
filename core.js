@@ -182,7 +182,24 @@
     return doc;
   }
 
-  const api = { DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, groupItems, fmtDate, fmtTime, buildPdf };
+  /**
+   * Junta os resultados do reconhecimento de voz num texto só.
+   * O Chrome/Android costuma mandar a fala em pedaços cumulativos
+   * ("falta", "falta de", "falta de organização"): descarta quem é prefixo do próximo.
+   */
+  function mergeResults(list) {
+    const arr = list.map(s => String(s || '').trim()).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      const a = norm(arr[i]);
+      const b = i + 1 < arr.length ? norm(arr[i + 1]) : null;
+      if (b !== null && b.startsWith(a)) continue;
+      out.push(arr[i]);
+    }
+    return out.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  const api = { DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.VistoriaCore = api;
 })(typeof self !== 'undefined' ? self : this);
