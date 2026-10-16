@@ -106,7 +106,8 @@
     const W = 210, H = 297, M = 16, bottom = H - 18;
     const contentW = W - M * 2;
     const groups = groupItems(vistoria.items, sectors);
-    const TEAL = [15, 118, 110];
+    const TEAL = [27, 42, 73];
+    const YELLOW = [255, 200, 61];
     let y = M;
 
     const footer = () => {
@@ -138,6 +139,11 @@
     const head = vistoria.title.includes(dateStr) ? vistoria.title : `${vistoria.title}  •  ${dateStr}`;
     const sub = `${head}  •  ${vistoria.items.length} ${vistoria.items.length === 1 ? 'apontamento' : 'apontamentos'} em ${groups.length} ${groups.length === 1 ? 'setor' : 'setores'}`;
     doc.text(sub, M, 25, { maxWidth: contentW });
+    doc.setDrawColor(...YELLOW);
+    doc.setLineWidth(0.6);
+    doc.setLineDashPattern([2.2, 1.6], 0);
+    doc.line(M, 30, W - M, 30);
+    doc.setLineDashPattern([], 0);
     y = 46;
 
     if (!groups.length) {
@@ -148,7 +154,7 @@
 
     groups.forEach(g => {
       ensure(22);
-      doc.setFillColor(230, 244, 242);
+      doc.setFillColor(232, 236, 243);
       doc.rect(M, y - 5.5, contentW, 9, 'F');
       doc.setFillColor(...TEAL);
       doc.rect(M, y - 5.5, 1.8, 9, 'F');
