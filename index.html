@@ -141,6 +141,9 @@
   .btn.sec{background:var(--chalk);color:var(--ink)}
   .mini{background:var(--chalk);color:var(--ink);font-weight:700;border-radius:10px;padding:9px 13px;font-size:14px}
   .mini.red{color:var(--red)}
+  #impInfo{font-size:16px;line-height:1.5;color:var(--slate);padding:2px 2px 4px}
+  #impInfo b{display:block;color:var(--ink);font-size:18px;letter-spacing:-.01em}
+  #impInfo.err{color:var(--red)}
   #unsupported{display:none;background:#fff4d6;color:#6b4a00;border-radius:12px;padding:10px 14px;margin:10px 14px 0;font-size:14px;flex:none}
 </style>
 </head>
@@ -189,6 +192,17 @@
   <div class="db">
     <div id="histList"></div>
     <button class="btn" id="btnNew">Nova vistoria</button>
+    <button class="btn sec" id="btnImport">Importar PDF</button>
+    <input type="file" id="fileImport" accept="application/pdf,.pdf" hidden>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="dlgImport">
+  <div class="dh">Importar PDF <button id="impClose">Fechar</button></div>
+  <div class="db">
+    <div id="impInfo"></div>
+    <button class="btn" id="impNew">Abrir como nova vistoria</button>
+    <button class="btn sec" id="impMerge">Juntar na vistoria atual</button>
   </div>
 </dialog>
 

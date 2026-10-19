@@ -82,7 +82,7 @@
             <div class="ntxt" contenteditable="true" spellcheck="false">${esc(i.text)}</div>
             <div class="nmeta">
               <label class="pillwrap"><span class="d"></span><select data-move aria-label="Mudar de setor">${opts(i.sector)}</select></label>
-              <span class="time">${C.fmtTime(i.ts)}</span>
+              <span class="time">${i.nt ? '' : C.fmtTime(i.ts)}</span>
               <button class="del" data-del aria-label="Excluir nota">${ICON_TRASH}</button>
             </div>
           </div>`).join('')}
@@ -380,6 +380,80 @@
     S.currentId = v.id;
     S.currentSector = 'Geral';
     save(); render(); $('dlgHist').close();
+  };
+
+  // ---------- importar PDF ----------
+  let imported = null; // resultado da leitura, aguardando a escolha do usuário
+
+  function plural(n, um, varios) { return n + ' ' + (n === 1 ? um : varios); }
+
+  function showImport(html, isErr) {
+    $('impInfo').innerHTML = html;
+    $('impInfo').classList.toggle('err', !!isErr);
+    $('impNew').style.display = isErr ? 'none' : '';
+    $('impMerge').style.display = isErr ? 'none' : '';
+    $('dlgImport').showModal();
+  }
+
+  $('btnImport').onclick = () => $('fileImport').click();
+  $('fileImport').onchange = async e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    $('dlgHist').close();
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const r = C.parseVistoriaPdf(buf);
+      r.items.forEach(i => { i.sector = C.resolveSector(i.sector, S.sectors, r.exact); });
+      imported = r;
+      const nSec = new Set(r.items.map(i => i.sector)).size;
+      $('impMerge').textContent = 'Juntar em "' + cur().title + '"';
+      showImport('<b>' + esc(r.title) + '</b>' + plural(r.items.length, 'nota', 'notas') + ' em ' + plural(nSec, 'setor', 'setores') + '.');
+    } catch (err) {
+      imported = null;
+      showImport(esc(err.message || 'Não consegui ler esse PDF.'), true);
+    }
+  };
+  $('impClose').onclick = () => { imported = null; $('dlgImport').close(); };
+
+  function ensureSectors(items) {
+    items.forEach(i => { if (!S.sectors.includes(i.sector)) S.sectors.push(i.sector); });
+  }
+
+  $('impNew').onclick = () => {
+    if (!imported) return;
+    ensureSectors(imported.items);
+    const v = {
+      id: uid(), title: imported.title, created: imported.created,
+      items: imported.items.map(i => ({ id: uid(), sector: i.sector, text: i.text, ts: i.ts, nt: !!i.noTime }))
+    };
+    S.vistorias.push(v);
+    S.currentId = v.id;
+    S.currentSector = 'Geral';
+    save(); render();
+    toast(plural(v.items.length, 'nota importada', 'notas importadas'));
+    imported = null;
+    $('dlgImport').close();
+  };
+
+  $('impMerge').onclick = () => {
+    if (!imported) return;
+    const key = (sector, text) => C.norm(sector) + '|' + C.norm(text).replace(/\s+/g, ' ').trim();
+    const v = cur();
+    const have = new Set(v.items.map(i => key(i.sector, i.text)));
+    let added = 0, dup = 0;
+    ensureSectors(imported.items);
+    imported.items.forEach(i => {
+      const k = key(i.sector, i.text);
+      if (have.has(k)) { dup++; return; }
+      have.add(k);
+      v.items.push({ id: uid(), sector: i.sector, text: i.text, ts: i.ts, nt: !!i.noTime });
+      added++;
+    });
+    save(); render();
+    toast(plural(added, 'nota adicionada', 'notas adicionadas') + (dup ? ', ' + plural(dup, 'já existia', 'já existiam') : ''));
+    imported = null;
+    $('dlgImport').close();
   };
 
   // ---------- PDF ----------
