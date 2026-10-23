@@ -2,10 +2,12 @@
   'use strict';
   const C = window.VistoriaCore;
   const KEY = 'vistoria.v1';
+  const DAY = 86400000;
   const $ = id => document.getElementById(id);
 
   const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM18 12a6 6 0 0 1-12 0M12 18v3"/></svg>';
   const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg>';
+  const ICON_ARROW = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
   // ---------- estado ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -18,10 +20,18 @@
   function load() {
     try {
       const d = JSON.parse(localStorage.getItem(KEY));
-      if (d && d.vistorias && d.vistorias.length) return d;
+      if (d && d.vistorias && d.vistorias.length) {
+        // dados salvos por versões anteriores não têm os campos de encaminhamento
+        if (!Array.isArray(d.dests) || !d.dests.length) d.dests = ['Manutenção'];
+        if (d.currentDest === undefined) d.currentDest = null;
+        return d;
+      }
     } catch (e) { /* ignora */ }
     const v = newVistoria();
-    return { sectors: C.DEFAULT_SECTORS.slice(), vistorias: [v], currentId: v.id, currentSector: 'Geral' };
+    return {
+      sectors: C.DEFAULT_SECTORS.slice(), dests: ['Manutenção'],
+      vistorias: [v], currentId: v.id, currentSector: 'Geral', currentDest: null
+    };
   }
 
   let S = load();
@@ -30,7 +40,36 @@
   }
   function cur() { return S.vistorias.find(v => v.id === S.currentId) || S.vistorias[0]; }
 
-  // cor de cada setor (cor de carretel de linha), estável pela posição na lista
+  function findItem(id) {
+    for (const v of S.vistorias) {
+      const it = v.items.find(i => i.id === id);
+      if (it) return { it, v };
+    }
+    return null;
+  }
+
+  // Notas encaminhadas (têm destino) de todas as visitas
+  function allTracked() {
+    const out = [];
+    S.vistorias.forEach(v => v.items.forEach(it => { if (it.dest) out.push({ it, v }); }));
+    return out;
+  }
+  const isOpen = it => !!it.dest && it.status !== 'done';
+  const openCount = () => allTracked().filter(x => isOpen(x.it)).length;
+  const openInOtherVisits = sector =>
+    allTracked().filter(x => x.v.id !== S.currentId && isOpen(x.it) && x.it.sector === sector).length;
+
+  function ageText(ts) {
+    const d = Math.floor((Date.now() - ts) / DAY);
+    return d <= 0 ? 'hoje' : d === 1 ? 'há 1 dia' : 'há ' + d + ' dias';
+  }
+  function plural(n, um, varios) { return n + ' ' + (n === 1 ? um : varios); }
+  function isoLocal(ts) {
+    const d = new Date(ts), p = x => String(x).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  // cor de cada setor, estável pela posição na lista
   const PALETTE = ['#2f6fde', '#e4572e', '#12a594', '#e09f00', '#8e5bd6', '#d6336c', '#3e9b2f', '#b8643c', '#0e9ec4', '#7a8f1e', '#c026d3', '#0f5d8c'];
   function colorFor(name) {
     if (name === 'Geral') return '#6b7a90';
@@ -57,11 +96,30 @@
     $('title').value = v.title;
     const n = v.items.length;
     const g = C.groupItems(v.items, S.sectors).length;
+    const f = v.items.filter(i => i.dest).length;
     $('stats').textContent = n
-      ? `${n} ${n === 1 ? 'nota' : 'notas'} em ${g} ${g === 1 ? 'setor' : 'setores'}`
+      ? `${plural(n, 'nota', 'notas')} em ${plural(g, 'setor', 'setores')}` + (f ? `, ${plural(f, 'encaminhada', 'encaminhadas')}` : '')
       : 'Nenhuma nota ainda';
     $('sectorName').textContent = S.currentSector;
     $('sectorDot').style.background = colorFor(S.currentSector);
+
+    $('destVal').textContent = S.currentDest || 'Nenhum';
+    $('destBar').classList.toggle('on', !!S.currentDest);
+
+    const other = openInOtherVisits(S.currentSector);
+    $('banner').style.display = other ? '' : 'none';
+    $('bannerTxt').textContent = `${S.currentSector}: ${plural(other, 'pendência aberta', 'pendências abertas')} de visitas anteriores`;
+
+    const oc = openCount();
+    $('badge').textContent = oc > 99 ? '99+' : oc;
+    $('badge').style.display = oc ? '' : 'none';
+  }
+
+  function destTag(i) {
+    if (!i.dest) return '<button class="tag none" data-dest>Encaminhar</button>';
+    const done = i.status === 'done';
+    return `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>` +
+      `<span class="st ${done ? 'done' : 'open'}">${done ? 'Resolvida' : 'Aberta'}</span>`;
   }
 
   function renderList() {
@@ -81,9 +139,14 @@
           <div class="note" data-id="${i.id}" style="--c:${colorFor(i.sector)}">
             <div class="ntxt" contenteditable="true" spellcheck="false">${esc(i.text)}</div>
             <div class="nmeta">
-              <label class="pillwrap"><span class="d"></span><select data-move aria-label="Mudar de setor">${opts(i.sector)}</select></label>
-              <span class="time">${i.nt ? '' : C.fmtTime(i.ts)}</span>
-              <button class="del" data-del aria-label="Excluir nota">${ICON_TRASH}</button>
+              <div class="nleft">
+                <label class="pillwrap"><span class="d"></span><select data-move aria-label="Mudar de setor">${opts(i.sector)}</select></label>
+                ${destTag(i)}
+              </div>
+              <div class="nend">
+                <span class="time">${i.nt ? '' : C.fmtTime(i.ts)}</span>
+                <button class="del" data-del aria-label="Excluir nota">${ICON_TRASH}</button>
+              </div>
             </div>
           </div>`).join('')}
       </section>`).join('');
@@ -93,8 +156,9 @@
 
   // ---------- notas ----------
   function addItem(text, sector) {
-    const v = cur();
-    v.items.push({ id: uid(), sector: sector || S.currentSector, text, ts: Date.now() });
+    const it = { id: uid(), sector: sector || S.currentSector, text, ts: Date.now() };
+    if (S.currentDest) { it.dest = S.currentDest; it.status = 'open'; }
+    cur().items.push(it);
     save();
   }
 
@@ -144,6 +208,182 @@
     }
     save(); render();
     $('dlgSector').close();
+  };
+
+  // ---------- encaminhamento (destino) ----------
+  let destTarget = null; // null = escolha fixa para as próximas notas; senão o id da nota
+
+  function renderDestGrid() {
+    const found = destTarget ? findItem(destTarget) : null;
+    const sel = destTarget ? (found && found.it.dest) || null : S.currentDest;
+    const open = {};
+    allTracked().forEach(x => { if (isOpen(x.it)) open[x.it.dest] = (open[x.it.dest] || 0) + 1; });
+    $('destGrid').innerHTML =
+      `<button class="tile${!sel ? ' on' : ''}" data-d=""><i style="background:#9aa6b8"></i><b>Nenhum</b></button>` +
+      S.dests.map(d => `
+        <button class="tile${d === sel ? ' on' : ''}" data-d="${esc(d)}">
+          <i style="background:var(--yellow-d)"></i><b>${esc(d)}</b>${open[d] ? `<small>${open[d]}</small>` : ''}
+        </button>`).join('') +
+      '<button class="tile add" data-add="1">Novo destino</button>';
+  }
+
+  function openDest(target) {
+    destTarget = target;
+    $('destTitle').textContent = target ? 'Encaminhar esta nota' : 'Encaminhar para';
+    $('destTip').textContent = target ? '' :
+      'As próximas notas já saem encaminhadas e ficam em aberto até você conferir. Volte para "Nenhum" quando terminar.';
+    renderDestGrid();
+    $('dlgDest').showModal();
+  }
+
+  function applyDest(name) {
+    if (!destTarget) { S.currentDest = name; return; }
+    const f = findItem(destTarget);
+    if (!f) return;
+    if (name) {
+      if (f.it.dest !== name) { f.it.dest = name; f.it.status = 'open'; delete f.it.doneAt; }
+    } else {
+      delete f.it.dest; delete f.it.status; delete f.it.doneAt; delete f.it.rechecks;
+    }
+  }
+
+  $('destBar').onclick = () => openDest(null);
+  $('destClose').onclick = () => $('dlgDest').close();
+  $('destGrid').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    let name;
+    if (b.dataset.add) {
+      const typed = (prompt('Nome do destino (ex.: Equipe de apoio):') || '').trim();
+      if (!typed) return;
+      name = C.resolveSector(typed, S.dests, false);
+      if (!S.dests.includes(name)) S.dests.push(name);
+    } else {
+      name = b.dataset.d || null;
+    }
+    applyDest(name);
+    save(); render();
+    if (!$('dlgPend').open) { /* nada */ } else renderPend();
+    $('dlgDest').close();
+  };
+
+  // ---------- pendências (conferir na volta) ----------
+  const P = { dest: null, status: 'open', sector: null };
+
+  function openPend(f) {
+    P.status = 'open';
+    if (f) { P.sector = f.sector || null; P.dest = f.dest !== undefined ? f.dest : P.dest; }
+    else P.sector = null;
+    renderPend();
+    $('dlgPend').showModal();
+  }
+
+  function pendRows() {
+    return allTracked()
+      .filter(({ it }) =>
+        (!P.dest || it.dest === P.dest) &&
+        (!P.sector || it.sector === P.sector) &&
+        (P.status === 'all' || (P.status === 'open') === (it.status !== 'done')))
+      .sort((a, b) => a.it.ts - b.it.ts);
+  }
+
+  function pItemHtml(r) {
+    const it = r.it, done = it.status === 'done', rc = it.rechecks || [];
+    let h = `<div class="pitem${done ? ' done' : ''}" data-id="${it.id}"><div class="ptxt">${esc(it.text)}</div>`;
+    h += `<div class="pmeta"><b>${esc(it.dest)}</b>, registrada em ${C.fmtDate(it.ts)}${done ? '' : ' (' + ageText(it.ts) + ')'}</div>`;
+    if (done) h += `<div class="pok">Resolvida${it.doneAt ? ' em ' + C.fmtDate(it.doneAt) : ''}</div>`;
+    else if (rc.length) h += `<div class="pwarn">Conferida ${rc.length}x e continua aberta, última em ${C.fmtDate(rc[rc.length - 1])}</div>`;
+    h += '<div class="pact">' + (done
+      ? '<button data-act="reopen">Reabrir</button>'
+      : '<button class="go" data-act="done">Resolvido</button><button class="no" data-act="still">Continua aberto</button>') + '</div></div>';
+    return h;
+  }
+
+  function renderPend() {
+    const all = allTracked();
+    const openBy = d => all.filter(x => x.it.dest === d && isOpen(x.it)).length;
+    const destChips = `<button class="chip${!P.dest ? ' on' : ''}" data-fd="">Todos</button>` +
+      S.dests.map(d => {
+        const n = openBy(d);
+        return `<button class="chip${P.dest === d ? ' on' : ''}" data-fd="${esc(d)}">${esc(d)}${n ? ' (' + n + ')' : ''}</button>`;
+      }).join('');
+    const statusChips = [['open', 'Abertas'], ['done', 'Resolvidas'], ['all', 'Todas']]
+      .map(([k, l]) => `<button class="chip${P.status === k ? ' on' : ''}" data-fst="${k}">${l}</button>`).join('');
+    $('pendFilters').innerHTML =
+      `<div class="fl">${destChips}</div><div class="fl">${statusChips}</div>` +
+      (P.sector ? `<div class="fl"><button class="chip x" data-fsec>Setor: ${esc(P.sector)} ×</button></div>` : '');
+
+    const rows = pendRows();
+    if (!rows.length) {
+      $('pendList').innerHTML = '<div class="pend-empty">' + (P.status === 'open'
+        ? '<b>Nenhuma pendência aberta.</b><br>Encaminhe uma nota para uma área (ex.: Manutenção) e ela fica aqui até você conferir.'
+        : 'Nada por aqui.') + '</div>';
+    } else {
+      const groups = C.groupItems(rows.map(r => ({ sector: r.it.sector, r })), S.sectors);
+      $('pendList').innerHTML = groups.map(g => `
+        <section class="pgroup">
+          <h3><i style="background:${colorFor(g.name)}"></i>${esc(g.name)}<span>${g.items.length}</span></h3>
+          ${g.items.map(i => pItemHtml(i.r)).join('')}
+        </section>`).join('');
+    }
+    $('pendPdf').textContent = P.dest ? 'Gerar PDF para ' + P.dest : 'Gerar PDF das pendências';
+  }
+
+  $('btnPend').onclick = () => openPend();
+  $('banner').onclick = () => openPend({ sector: S.currentSector, dest: null });
+  $('pendClose').onclick = () => $('dlgPend').close();
+
+  $('pendFilters').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if ('fd' in b.dataset) P.dest = b.dataset.fd || null;
+    else if (b.dataset.fst) P.status = b.dataset.fst;
+    else if ('fsec' in b.dataset) P.sector = null;
+    renderPend();
+  };
+
+  $('pendList').onclick = e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const f = findItem(b.closest('.pitem').dataset.id);
+    if (!f) return;
+    const it = f.it, act = b.dataset.act;
+    if (act === 'done') {
+      it.status = 'done'; it.doneAt = Date.now();
+    } else if (act === 'still') {
+      const rc = it.rechecks || [];
+      if (rc.length && Date.now() - rc[rc.length - 1] < 5 * 60000) { toast('Já anotado agora há pouco'); return; }
+      it.rechecks = rc.concat(Date.now());
+      toast('Anotado: continua aberto');
+    } else if (act === 'reopen') {
+      it.status = 'open'; delete it.doneAt;
+    }
+    save(); render(); renderPend();
+  };
+
+  $('pendPdf').onclick = () => {
+    const rows = pendRows();
+    if (!rows.length) { toast('Nada para colocar no relatório'); return; }
+    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
+    const now = Date.now();
+    const heading = P.dest ? 'Relatório para ' + P.dest : 'Relatório de pendências';
+    const nSec = new Set(rows.map(r => r.it.sector)).size;
+    const what = P.status === 'open' ? plural(rows.length, 'pendência', 'pendências') : plural(rows.length, 'item', 'itens');
+    const fake = {
+      title: heading + ' ' + C.fmtDate(now), created: now,
+      items: rows.map(r => ({ sector: r.it.sector, text: r.it.text, ts: r.it.ts, dest: r.it.dest, status: r.it.status, doneAt: r.it.doneAt, rechecks: r.it.rechecks }))
+    };
+    const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
+      heading, embed: false,
+      subtitle: `Emitido em ${C.fmtDate(now)}  •  ${what} em ${plural(nSec, 'setor', 'setores')}`,
+      meta: i => {
+        let m = (P.dest ? '' : i.dest + '. ') + 'Registrada em ' + C.fmtDate(i.ts);
+        if (i.status === 'done') m += '. Resolvida' + (i.doneAt ? ' em ' + C.fmtDate(i.doneAt) : '');
+        else if (i.rechecks && i.rechecks.length) m += '. Conferida ' + i.rechecks.length + 'x e continua aberta (última em ' + C.fmtDate(i.rechecks[i.rechecks.length - 1]) + ')';
+        return m;
+      }
+    });
+    showPdf(doc, 'Pendencias_' + (C.norm(P.dest || 'todas').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')) + '_' + isoLocal(now) + '.pdf');
   };
 
   // ---------- reconhecimento de voz (segurar para gravar) ----------
@@ -339,6 +579,8 @@
     if (it) { it.sector = e.target.value; save(); render(); }
   });
   $('list').addEventListener('click', e => {
+    const d = e.target.closest('[data-dest]');
+    if (d) { openDest(d.closest('.note').dataset.id); return; }
     const b = e.target.closest('[data-del]');
     if (!b) return;
     const id = b.closest('.note').dataset.id;
@@ -351,7 +593,7 @@
     const list = S.vistorias.slice().sort((a, b) => b.created - a.created);
     $('histList').innerHTML = list.map(v => `
       <div class="hist${v.id === S.currentId ? ' cur' : ''}" data-id="${v.id}">
-        <div class="hinfo"><b>${esc(v.title)}</b><small>${C.fmtDate(v.created)}, ${v.items.length} ${v.items.length === 1 ? 'nota' : 'notas'}</small></div>
+        <div class="hinfo"><b>${esc(v.title)}</b><small>${C.fmtDate(v.created)}, ${plural(v.items.length, 'nota', 'notas')}</small></div>
         <button class="mini" data-open>Abrir</button>
         <button class="mini red" data-rm>Excluir</button>
       </div>`).join('');
@@ -366,7 +608,9 @@
       S.currentId = id; save(); render(); $('dlgHist').close();
     } else if (e.target.matches('[data-rm]')) {
       const v = S.vistorias.find(x => x.id === id);
-      if (!confirm('Excluir "' + v.title + '"?')) return;
+      const pend = v.items.filter(isOpen).length;
+      const msg = 'Excluir "' + v.title + '"?' + (pend ? '\n\nAtenção: ' + plural(pend, 'pendência aberta some', 'pendências abertas somem') + ' junto.' : '');
+      if (!confirm(msg)) return;
       S.vistorias = S.vistorias.filter(x => x.id !== id);
       if (!S.vistorias.length) S.vistorias.push(newVistoria());
       if (!S.vistorias.some(x => x.id === S.currentId)) S.currentId = S.vistorias[0].id;
@@ -379,13 +623,12 @@
     S.vistorias.push(v);
     S.currentId = v.id;
     S.currentSector = 'Geral';
+    S.currentDest = null;
     save(); render(); $('dlgHist').close();
   };
 
   // ---------- importar PDF ----------
   let imported = null; // resultado da leitura, aguardando a escolha do usuário
-
-  function plural(n, um, varios) { return n + ' ' + (n === 1 ? um : varios); }
 
   function showImport(html, isErr) {
     $('impInfo').innerHTML = html;
@@ -417,16 +660,27 @@
   $('impClose').onclick = () => { imported = null; $('dlgImport').close(); };
 
   function ensureSectors(items) {
-    items.forEach(i => { if (!S.sectors.includes(i.sector)) S.sectors.push(i.sector); });
+    items.forEach(i => {
+      if (!S.sectors.includes(i.sector)) S.sectors.push(i.sector);
+      if (i.dest && !S.dests.includes(i.dest)) S.dests.push(i.dest);
+    });
+  }
+
+  function mkItem(i) {
+    const it = { id: uid(), sector: i.sector, text: i.text, ts: i.ts, nt: !!i.noTime };
+    if (i.dest) {
+      it.dest = i.dest;
+      it.status = i.status === 'done' ? 'done' : 'open';
+      if (i.doneAt) it.doneAt = i.doneAt;
+      if (i.rechecks && i.rechecks.length) it.rechecks = i.rechecks;
+    }
+    return it;
   }
 
   $('impNew').onclick = () => {
     if (!imported) return;
     ensureSectors(imported.items);
-    const v = {
-      id: uid(), title: imported.title, created: imported.created,
-      items: imported.items.map(i => ({ id: uid(), sector: i.sector, text: i.text, ts: i.ts, nt: !!i.noTime }))
-    };
+    const v = { id: uid(), title: imported.title, created: imported.created, items: imported.items.map(mkItem) };
     S.vistorias.push(v);
     S.currentId = v.id;
     S.currentSector = 'Geral';
@@ -447,7 +701,7 @@
       const k = key(i.sector, i.text);
       if (have.has(k)) { dup++; return; }
       have.add(k);
-      v.items.push({ id: uid(), sector: i.sector, text: i.text, ts: i.ts, nt: !!i.noTime });
+      v.items.push(mkItem(i));
       added++;
     });
     save(); render();
@@ -458,17 +712,24 @@
 
   // ---------- PDF ----------
   let pdfBlob = null, pdfName = '';
-  $('btnPdf').onclick = () => {
-    const v = cur();
-    if (!v.items.length) { toast('Nenhuma nota para o PDF'); return; }
-    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
-    const doc = C.buildPdf(window.jspdf.jsPDF, v, S.sectors);
+
+  function showPdf(doc, name) {
     pdfBlob = doc.output('blob');
-    pdfName = 'Vistoria_' + new Date(v.created).toISOString().slice(0, 10) + '_' + C.norm(v.title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf';
+    pdfName = name;
     const canShare = navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], pdfName, { type: 'application/pdf' })] });
     $('pdfShare').style.display = canShare ? '' : 'none';
     $('pdfInfo').textContent = pdfName + ', ' + Math.max(1, Math.round(pdfBlob.size / 1024)) + ' KB';
     $('dlgPdf').showModal();
+  }
+
+  $('btnPdf').onclick = () => {
+    const v = cur();
+    if (!v.items.length) { toast('Nenhuma nota para o PDF'); return; }
+    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
+    const doc = C.buildPdf(window.jspdf.jsPDF, v, S.sectors, {
+      meta: i => i.dest ? 'Encaminhado para ' + i.dest + (i.status === 'done' ? ', resolvido' : ', em aberto') : null
+    });
+    showPdf(doc, 'Vistoria_' + isoLocal(v.created) + '_' + C.norm(v.title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf');
   };
   $('pdfClose').onclick = () => $('dlgPdf').close();
   $('pdfSave').onclick = () => {

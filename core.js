@@ -118,7 +118,11 @@
   function embedData(v) {
     return EMBED_TAG + toB64(JSON.stringify({
       v: 1, title: v.title, created: v.created,
-      items: v.items.map(i => ({ s: i.sector, t: i.text, ts: i.ts }))
+      items: v.items.map(i => ({
+        s: i.sector, t: i.text, ts: i.ts,
+        d: i.dest || undefined, x: i.dest ? (i.status || 'open') : undefined,
+        dn: i.doneAt || undefined, rc: i.rechecks && i.rechecks.length ? i.rechecks : undefined
+      }))
     }));
   }
 
@@ -238,8 +242,16 @@
               title: String(d.title || 'Vistoria importada'),
               created,
               exact: true,
-              items: d.items.map(i => ({ sector: String(i.s || 'Geral'), text: String(i.t || '').trim(), ts: Number(i.ts) || created }))
-                .filter(i => i.text)
+              items: d.items.map(i => {
+                const it = { sector: String(i.s || 'Geral'), text: String(i.t || '').trim(), ts: Number(i.ts) || created };
+                if (i.d) {
+                  it.dest = String(i.d);
+                  it.status = i.x === 'done' ? 'done' : 'open';
+                  if (i.dn) it.doneAt = Number(i.dn) || undefined;
+                  if (Array.isArray(i.rc)) it.rechecks = i.rc.map(Number).filter(Boolean);
+                }
+                return it;
+              }).filter(i => i.text)
             };
           }
         } catch (e) { /* cai para a leitura do texto */ }
@@ -249,6 +261,9 @@
     // 2) leitura do texto desenhado no PDF (PDFs antigos)
     const blocks = pdfTextBlocks(s);
     if (!blocks.some(b => near(b.size, 20) && clean(b.text) === 'Relatório de vistoria')) {
+      if (blocks.some(b => near(b.size, 20) && /^Relatório (para|de pendências)/.test(clean(b.text)))) {
+        throw new Error('Esse é um relatório de pendências feito para a equipe, e não dá para importar. Importe o PDF da vistoria.');
+      }
       throw new Error(s.includes('/FlateDecode')
         ? 'Esse PDF foi comprimido por outro programa. Use o PDF original, do jeito que o app gerou.'
         : 'Esse PDF não foi gerado pelo app Vistoria por Voz.');
@@ -289,11 +304,22 @@
       .replace(/\b(De|Da|Do|Das|Dos|E)\b/g, (m, w, off) => (off ? w.toLowerCase() : w));
   }
 
-  /** Monta o PDF (A4) e devolve o objeto jsPDF. */
-  function buildPdf(JsPDF, vistoria, sectors) {
+  /**
+   * Monta o PDF (A4) e devolve o objeto jsPDF.
+   * opts (todos opcionais):
+   *   heading  — título grande (padrão "Relatório de vistoria")
+   *   subtitle — linha abaixo do título (padrão: nome da vistoria + contagem)
+   *   embed    — guarda os dados dentro do PDF para importar depois (padrão true)
+   *   meta     — função(nota) que devolve uma linha de detalhe em cinza sob a nota, ou null
+   *   empty    — texto quando não há notas
+   */
+  function buildPdf(JsPDF, vistoria, sectors, opts) {
+    opts = opts || {};
     const doc = new JsPDF({ unit: 'mm', format: 'a4' });
     try {
-      doc.setProperties({ title: vistoria.title, subject: embedData(vistoria), creator: 'Vistoria por Voz' });
+      const props = { title: vistoria.title, creator: 'Vistoria por Voz' };
+      if (opts.embed !== false) props.subject = embedData(vistoria);
+      doc.setProperties(props);
     } catch (e) { /* o PDF sai igual, só sem os dados embutidos */ }
     const W = 210, H = 297, M = 16, bottom = H - 18;
     const contentW = W - M * 2;
@@ -324,12 +350,14 @@
     doc.setTextColor(255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(20);
-    doc.text('Relatório de vistoria', M, 16);
+    doc.text(opts.heading || 'Relatório de vistoria', M, 16);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10.5);
     const dateStr = fmtDate(vistoria.created);
     const head = vistoria.title.includes(dateStr) ? vistoria.title : `${vistoria.title}  •  ${dateStr}`;
-    const sub = `${head}  •  ${vistoria.items.length} ${vistoria.items.length === 1 ? 'apontamento' : 'apontamentos'} em ${groups.length} ${groups.length === 1 ? 'setor' : 'setores'}`;
+    const sub = opts.subtitle != null
+      ? opts.subtitle
+      : `${head}  •  ${vistoria.items.length} ${vistoria.items.length === 1 ? 'apontamento' : 'apontamentos'} em ${groups.length} ${groups.length === 1 ? 'setor' : 'setores'}`;
     doc.text(sub, M, 25, { maxWidth: contentW });
     doc.setDrawColor(...YELLOW);
     doc.setLineWidth(0.6);
@@ -341,7 +369,7 @@
     if (!groups.length) {
       doc.setTextColor(90);
       doc.setFontSize(11);
-      doc.text('Nenhum apontamento registrado.', M, y);
+      doc.text(opts.empty || 'Nenhum apontamento registrado.', M, y);
     }
 
     groups.forEach(g => {
@@ -364,13 +392,19 @@
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(11);
         const lines = doc.splitTextToSize(it.text, contentW - 14);
-        const h = lines.length * 5.2 + 3.2;
+        const metaTxt = opts.meta ? opts.meta(it) : null;
+        const h = lines.length * 5.2 + 3.2 + (metaTxt ? 4.4 : 0);
         ensure(h);
         doc.setDrawColor(120);
         doc.setLineWidth(0.3);
         doc.rect(M + 2, y - 3.4, 3.6, 3.6);
         doc.setTextColor(30);
         doc.text(lines, M + 9, y);
+        if (metaTxt) {
+          doc.setFontSize(8.5);
+          doc.setTextColor(110);
+          doc.text(metaTxt, M + 9, y + (lines.length - 1) * 4.5 + 4.9, { maxWidth: contentW - 14 });
+        }
         y += h;
       });
       y += 4;

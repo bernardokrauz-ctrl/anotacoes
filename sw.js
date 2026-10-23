@@ -1,4 +1,4 @@
-const CACHE = 'vistoria-v4';
+const CACHE = 'vistoria-v5';
 const ASSETS = [
   './', './index.html', './app.js', './core.js', './jspdf.umd.min.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png'
