@@ -7,6 +7,7 @@
 
   const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM18 12a6 6 0 0 1-12 0M12 18v3"/></svg>';
   const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg>';
+  const ICON_CAM = '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>';
   const ICON_ARROW = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
   // ---------- estado ----------
@@ -77,6 +78,111 @@
     return PALETTE[(i < 0 ? name.length : i) % PALETTE.length];
   }
 
+
+  // ---------- fotos (IndexedDB: miniatura + versão reduzida) ----------
+  const TH = new Map();   // id -> { d (dataURL), w, h }  miniaturas em memória
+  let dbp = null;
+  function db() {
+    if (!dbp) dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('vistoria-fotos', 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('thumb', { keyPath: 'id' }); r.result.createObjectStore('full', { keyPath: 'id' }); };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    return dbp;
+  }
+  function dbRun(stores, mode, fn) {
+    return db().then(d => new Promise((res, rej) => {
+      const t = d.transaction(stores, mode);
+      let out;
+      try { out = fn(t); } catch (e) { rej(e); return; }
+      t.oncomplete = () => res(out && out.result);
+      t.onerror = t.onabort = () => rej(t.error);
+    }));
+  }
+  function putPhoto(id, thumb, full) {
+    return dbRun(['thumb', 'full'], 'readwrite', t => {
+      t.objectStore('thumb').put({ id, d: thumb.d, w: thumb.w, h: thumb.h });
+      t.objectStore('full').put({ id, d: full.d });
+    });
+  }
+  function delPhotoData(ids) {
+    ids = (ids || []).filter(Boolean);
+    ids.forEach(id => TH.delete(id));
+    if (!ids.length) return;
+    dbRun(['thumb', 'full'], 'readwrite', t => ids.forEach(id => { t.objectStore('thumb').delete(id); t.objectStore('full').delete(id); })).catch(() => {});
+  }
+  const photosOf = items => [].concat(...items.map(i => i.photos || []));
+
+  let photosLoaded = false;
+  function loadThumbs() {
+    return dbRun(['thumb'], 'readonly', t => t.objectStore('thumb').getAll()).then(rows => {
+      (rows || []).forEach(r => TH.set(r.id, { d: r.d, w: r.w, h: r.h }));
+      photosLoaded = true;
+      // limpa fotos órfãs (de notas que não existem mais)
+      const used = new Set(photosOf([].concat(...S.vistorias.map(v => v.items))));
+      const orphans = (rows || []).map(r => r.id).filter(id => !used.has(id));
+      if (orphans.length) delPhotoData(orphans);
+      render();
+      if ($('dlgPend').open) renderPend();
+    }).catch(() => {});
+  }
+
+  function loadImg(file) {
+    return new Promise((res, rej) => {
+      const u = URL.createObjectURL(file), im = new Image();
+      im.onload = () => { URL.revokeObjectURL(u); res(im); };
+      im.onerror = () => { URL.revokeObjectURL(u); rej(new Error('img')); };
+      im.src = u;
+    });
+  }
+  function shrink(im, max, q) {
+    const sc = Math.min(1, max / Math.max(im.naturalWidth, im.naturalHeight));
+    const w = Math.max(1, Math.round(im.naturalWidth * sc)), h = Math.max(1, Math.round(im.naturalHeight * sc));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
+    x.drawImage(im, 0, 0, w, h);
+    return { d: c.toDataURL('image/jpeg', q), w, h };
+  }
+
+  async function addPhotos(files, targetId) {
+    const f = findItem(targetId);
+    if (!f || !files.length) return;
+    let ok = 0;
+    toast('Salvando foto…');
+    for (const file of files) {
+      try {
+        const im = await loadImg(file);
+        const thumb = shrink(im, 360, 0.72), full = shrink(im, 1280, 0.7);
+        const id = uid();
+        await putPhoto(id, thumb, full);
+        TH.set(id, thumb);
+        (f.it.photos = f.it.photos || []).push(id);
+        ok++;
+      } catch (e) { /* segue com as outras */ }
+    }
+    save(); render();
+    if ($('dlgPend').open) renderPend();
+    toast(ok ? (ok === 1 ? 'Foto anexada' : ok + ' fotos anexadas') + (ok < files.length ? ', mas ' + (files.length - ok) + ' falhou' : '') : 'Não consegui salvar a foto');
+  }
+
+  function picsHtml(it) {
+    const ids = it.photos || [];
+    if (!ids.length) return '';
+    return '<div class="pics">' + ids.map(id => TH.has(id)
+      ? `<button class="pic" data-pic="${id}" aria-label="Ver foto"><img src="${TH.get(id).d}" alt="Foto da nota"></button>`
+      : '<span class="pic"></span>').join('') + '</div>';
+  }
+  const pdfPhoto = id => { const t = TH.get(id); return t ? { data: t.d, w: t.w, h: t.h } : null; };
+
+  // ---------- previsão ----------
+  function shortDate(ts) { const d = new Date(ts), p = x => String(x).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1); }
+  function fcState(it) { return C.forecastState(it, Date.now()); }
+  const lateCount = () => allTracked().filter(x => { const f = fcState(x.it); return f && f.late; }).length;
+  function dia(n) { return n + (n === 1 ? ' dia' : ' dias'); }
+
   // ---------- UI ----------
   let toastT;
   function toast(msg) {
@@ -97,8 +203,10 @@
     const n = v.items.length;
     const g = C.groupItems(v.items, S.sectors).length;
     const f = v.items.filter(i => i.dest).length;
+    const lt = v.items.filter(i => { const x = fcState(i); return x && x.late; }).length;
     $('stats').textContent = n
-      ? `${plural(n, 'nota', 'notas')} em ${plural(g, 'setor', 'setores')}` + (f ? `, ${plural(f, 'encaminhada', 'encaminhadas')}` : '')
+      ? `${plural(n, 'nota', 'notas')} em ${plural(g, 'setor', 'setores')}` + (f ? `, ${plural(f, 'encaminhada', 'encaminhadas')}` : '') +
+        (lt ? `, ${plural(lt, 'atrasada', 'atrasadas')}` : '')
       : 'Nenhuma nota ainda';
     $('sectorName').textContent = S.currentSector;
     $('sectorDot').style.background = colorFor(S.currentSector);
@@ -118,8 +226,16 @@
   function destTag(i) {
     if (!i.dest) return '<button class="tag none" data-dest>Encaminhar</button>';
     const done = i.status === 'done';
-    return `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>` +
-      `<span class="st ${done ? 'done' : 'open'}">${done ? 'Resolvida' : 'Aberta'}</span>`;
+    const d = C.openDays(i.ts, Date.now());
+    let h = `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>` +
+      `<span class="st ${done ? 'done' : 'open'}">${done ? 'Resolvida' : d === 0 ? 'Aberta hoje' : 'Aberta há ' + dia(d)}</span>`;
+    if (!done) {
+      const f = fcState(i);
+      h += !f ? '<button class="fc none" data-fc>Previsão</button>'
+        : f.late ? `<button class="fc late" data-fc>Atrasada ${dia(f.days)}</button>`
+        : `<button class="fc" data-fc>Previsto ${f.left === 0 ? 'para hoje' : shortDate(i.forecast)}</button>`;
+    }
+    return h;
   }
 
   function renderList() {
@@ -136,12 +252,14 @@
       <section class="group">
         <div class="ghead"><i style="background:${colorFor(g.name)}"></i><h2>${esc(g.name)}</h2><span>${g.items.length}</span></div>
         ${g.items.map(i => `
-          <div class="note" data-id="${i.id}" style="--c:${colorFor(i.sector)}">
+          <div class="note${(() => { const f = fcState(i); return f && f.late ? ' late' : ''; })()}" data-id="${i.id}" style="--c:${colorFor(i.sector)}">
             <div class="ntxt" contenteditable="true" spellcheck="false">${esc(i.text)}</div>
+            ${picsHtml(i)}
             <div class="nmeta">
               <div class="nleft">
                 <label class="pillwrap"><span class="d"></span><select data-move aria-label="Mudar de setor">${opts(i.sector)}</select></label>
                 ${destTag(i)}
+                <button class="tag photo" data-photo aria-label="Adicionar foto">${ICON_CAM}Foto</button>
               </div>
               <div class="nend">
                 <span class="time">${i.nt ? '' : C.fmtTime(i.ts)}</span>
@@ -241,9 +359,9 @@
     const f = findItem(destTarget);
     if (!f) return;
     if (name) {
-      if (f.it.dest !== name) { f.it.dest = name; f.it.status = 'open'; delete f.it.doneAt; }
+      if (f.it.dest !== name) { f.it.dest = name; f.it.status = 'open'; delete f.it.doneAt; delete f.it.forecast; delete f.it.fcPrev; }
     } else {
-      delete f.it.dest; delete f.it.status; delete f.it.doneAt; delete f.it.rechecks;
+      delete f.it.dest; delete f.it.status; delete f.it.doneAt; delete f.it.rechecks; delete f.it.forecast; delete f.it.fcPrev;
     }
   }
 
@@ -283,19 +401,28 @@
       .filter(({ it }) =>
         (!P.dest || it.dest === P.dest) &&
         (!P.sector || it.sector === P.sector) &&
-        (P.status === 'all' || (P.status === 'open') === (it.status !== 'done')))
+        (P.status === 'all' ||
+          (P.status === 'late' ? !!(fcState(it) && fcState(it).late) : (P.status === 'open') === (it.status !== 'done'))))
       .sort((a, b) => a.it.ts - b.it.ts);
   }
 
   function pItemHtml(r) {
     const it = r.it, done = it.status === 'done', rc = it.rechecks || [];
-    let h = `<div class="pitem${done ? ' done' : ''}" data-id="${it.id}"><div class="ptxt">${esc(it.text)}</div>`;
+    const fs = fcState(it);
+    let h = `<div class="pitem${done ? ' done' : ''}${fs && fs.late ? ' late' : ''}" data-id="${it.id}"><div class="ptxt">${esc(it.text)}</div>`;
+    h += picsHtml(it);
     h += `<div class="pmeta"><b>${esc(it.dest)}</b>, registrada em ${C.fmtDate(it.ts)}${done ? '' : ' (' + ageText(it.ts) + ')'}</div>`;
+    if (!done) {
+      if (fs && fs.late) h += `<div class="pwarn">Atrasada ${dia(fs.days)}: a previsão era ${C.fmtDate(it.forecast)}</div>`;
+      else if (fs) h += `<div class="pfc">Previsão de resolução: ${C.fmtDate(it.forecast)}${fs.left === 0 ? ' (hoje)' : fs.left === 1 ? ' (amanhã)' : ''}</div>`;
+      else h += '<div class="pmeta">Sem previsão de resolução ainda</div>';
+    }
     if (done) h += `<div class="pok">Resolvida${it.doneAt ? ' em ' + C.fmtDate(it.doneAt) : ''}</div>`;
     else if (rc.length) h += `<div class="pwarn">Conferida ${rc.length}x e continua aberta, última em ${C.fmtDate(rc[rc.length - 1])}</div>`;
     h += '<div class="pact">' + (done
       ? '<button data-act="reopen">Reabrir</button>'
-      : '<button class="go" data-act="done">Resolvido</button><button class="no" data-act="still">Continua aberto</button>') + '</div></div>';
+      : '<button class="go" data-act="done">Resolvido</button><button class="no" data-act="still">Continua aberto</button>') + '</div>' +
+      '<div class="pact two">' + (done ? '' : '<button data-fc>Previsão</button>') + '<button data-photo>Foto</button></div></div>';
     return h;
   }
 
@@ -307,7 +434,8 @@
         const n = openBy(d);
         return `<button class="chip${P.dest === d ? ' on' : ''}" data-fd="${esc(d)}">${esc(d)}${n ? ' (' + n + ')' : ''}</button>`;
       }).join('');
-    const statusChips = [['open', 'Abertas'], ['done', 'Resolvidas'], ['all', 'Todas']]
+    const nLate = lateCount();
+    const statusChips = [['open', 'Abertas'], ['late', 'Atrasadas' + (nLate ? ' (' + nLate + ')' : '')], ['done', 'Resolvidas'], ['all', 'Todas']]
       .map(([k, l]) => `<button class="chip${P.status === k ? ' on' : ''}" data-fst="${k}">${l}</button>`).join('');
     $('pendFilters').innerHTML =
       `<div class="fl">${destChips}</div><div class="fl">${statusChips}</div>` +
@@ -343,6 +471,13 @@
   };
 
   $('pendList').onclick = e => {
+    const rowEl = e.target.closest('.pitem');
+    if (rowEl) {
+      const id = rowEl.dataset.id;
+      if (e.target.closest('[data-pic]')) { viewPhoto(e.target.closest('[data-pic]').dataset.pic, id); return; }
+      if (e.target.closest('[data-photo]')) { openPhoto(id); return; }
+      if (e.target.closest('[data-fc]')) { openFc(id); return; }
+    }
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const f = findItem(b.closest('.pitem').dataset.id);
@@ -371,17 +506,14 @@
     const what = P.status === 'open' ? plural(rows.length, 'pendência', 'pendências') : plural(rows.length, 'item', 'itens');
     const fake = {
       title: heading + ' ' + C.fmtDate(now), created: now,
-      items: rows.map(r => ({ sector: r.it.sector, text: r.it.text, ts: r.it.ts, dest: r.it.dest, status: r.it.status, doneAt: r.it.doneAt, rechecks: r.it.rechecks }))
+      items: rows.map(r => ({ sector: r.it.sector, text: r.it.text, ts: r.it.ts, dest: r.it.dest, status: r.it.status, doneAt: r.it.doneAt,
+        rechecks: r.it.rechecks, forecast: r.it.forecast, fcPrev: r.it.fcPrev, photos: r.it.photos }))
     };
     const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
       heading, embed: false,
       subtitle: `Emitido em ${C.fmtDate(now)}  •  ${what} em ${plural(nSec, 'setor', 'setores')}`,
-      meta: i => {
-        let m = (P.dest ? '' : i.dest + '. ') + 'Registrada em ' + C.fmtDate(i.ts);
-        if (i.status === 'done') m += '. Resolvida' + (i.doneAt ? ' em ' + C.fmtDate(i.doneAt) : '');
-        else if (i.rechecks && i.rechecks.length) m += '. Conferida ' + i.rechecks.length + 'x e continua aberta (última em ' + C.fmtDate(i.rechecks[i.rechecks.length - 1]) + ')';
-        return m;
-      }
+      photo: pdfPhoto,
+      meta: i => C.maintMeta(i, now, !P.dest)
     });
     showPdf(doc, 'Pendencias_' + (C.norm(P.dest || 'todas').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')) + '_' + isoLocal(now) + '.pdf');
   };
@@ -542,6 +674,7 @@
   });
 
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { render(); if ($('dlgPend').open) renderPend(); }
     if (document.visibilityState === 'visible' && recording) keepAwake(true);
     if (document.visibilityState === 'hidden' && recording) release();
   });
@@ -569,7 +702,7 @@
     const it = cur().items.find(i => i.id === id);
     const txt = t.textContent.trim();
     if (!it) return;
-    if (!txt) { cur().items = cur().items.filter(i => i.id !== id); save(); render(); return; }
+    if (!txt) { delPhotoData(it.photos); cur().items = cur().items.filter(i => i.id !== id); save(); render(); return; }
     if (txt !== it.text) { it.text = txt; save(); }
   });
   $('list').addEventListener('change', e => {
@@ -581,9 +714,17 @@
   $('list').addEventListener('click', e => {
     const d = e.target.closest('[data-dest]');
     if (d) { openDest(d.closest('.note').dataset.id); return; }
+    const pc = e.target.closest('[data-pic]');
+    if (pc) { viewPhoto(pc.dataset.pic, pc.closest('.note').dataset.id); return; }
+    const ph = e.target.closest('[data-photo]');
+    if (ph) { openPhoto(ph.closest('.note').dataset.id); return; }
+    const fc = e.target.closest('[data-fc]');
+    if (fc) { openFc(fc.closest('.note').dataset.id); return; }
     const b = e.target.closest('[data-del]');
     if (!b) return;
     const id = b.closest('.note').dataset.id;
+    const gone = cur().items.find(i => i.id === id);
+    if (gone) delPhotoData(gone.photos);
     cur().items = cur().items.filter(i => i.id !== id);
     save(); render();
   });
@@ -611,6 +752,7 @@
       const pend = v.items.filter(isOpen).length;
       const msg = 'Excluir "' + v.title + '"?' + (pend ? '\n\nAtenção: ' + plural(pend, 'pendência aberta some', 'pendências abertas somem') + ' junto.' : '');
       if (!confirm(msg)) return;
+      delPhotoData(photosOf(v.items));
       S.vistorias = S.vistorias.filter(x => x.id !== id);
       if (!S.vistorias.length) S.vistorias.push(newVistoria());
       if (!S.vistorias.some(x => x.id === S.currentId)) S.currentId = S.vistorias[0].id;
@@ -673,6 +815,8 @@
       it.status = i.status === 'done' ? 'done' : 'open';
       if (i.doneAt) it.doneAt = i.doneAt;
       if (i.rechecks && i.rechecks.length) it.rechecks = i.rechecks;
+      if (i.forecast) it.forecast = i.forecast;
+      if (i.fcPrev && i.fcPrev.length) it.fcPrev = i.fcPrev;
     }
     return it;
   }
@@ -727,7 +871,8 @@
     if (!v.items.length) { toast('Nenhuma nota para o PDF'); return; }
     if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
     const doc = C.buildPdf(window.jspdf.jsPDF, v, S.sectors, {
-      meta: i => i.dest ? 'Encaminhado para ' + i.dest + (i.status === 'done' ? ', resolvido' : ', em aberto') : null
+      photo: pdfPhoto,
+      meta: i => C.vistoriaMeta(i, Date.now())
     });
     showPdf(doc, 'Vistoria_' + isoLocal(v.created) + '_' + C.norm(v.title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf');
   };
@@ -746,8 +891,103 @@
     } catch (e) { /* cancelado */ }
   };
 
+  // ---------- fotos: escolher origem e ver ----------
+  let photoTarget = null, viewing = null;
+
+  function openPhoto(id) {
+    const f = findItem(id);
+    if (!f) return;
+    photoTarget = id;
+    const t = f.it.text.length > 70 ? f.it.text.slice(0, 70) + '…' : f.it.text;
+    $('photoTip').textContent = 'Nota: ' + t;
+    $('dlgPhoto').showModal();
+  }
+  $('cam').onclick = () => {
+    const items = cur().items;
+    if (!items.length) { toast('Crie uma nota primeiro e depois anexe a foto'); return; }
+    openPhoto(items.reduce((a, b) => (b.ts >= a.ts ? b : a)).id);
+  };
+  $('photoClose').onclick = () => $('dlgPhoto').close();
+  $('photoCam').onclick = () => $('fileCam').click();
+  $('photoGal').onclick = () => $('fileGal').click();
+  function gotFiles(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    $('dlgPhoto').close();
+    addPhotos(files, photoTarget);
+  }
+  $('fileCam').onchange = gotFiles;
+  $('fileGal').onchange = gotFiles;
+
+  async function viewPhoto(pid, itemId) {
+    viewing = { pid, itemId };
+    const t = TH.get(pid);
+    $('viewImg').src = t ? t.d : '';
+    $('dlgView').showModal();
+    try {
+      const r = await dbRun(['full'], 'readonly', tx => tx.objectStore('full').get(pid));
+      if (r && viewing && viewing.pid === pid) $('viewImg').src = r.d;
+    } catch (e) { /* fica a miniatura */ }
+  }
+  $('viewClose').onclick = () => { $('dlgView').close(); viewing = null; $('viewImg').removeAttribute('src'); };
+  $('viewDel').onclick = () => {
+    if (!viewing) return;
+    if (!confirm('Excluir esta foto?')) return;
+    const f = findItem(viewing.itemId);
+    if (f) f.it.photos = (f.it.photos || []).filter(x => x !== viewing.pid);
+    delPhotoData([viewing.pid]);
+    save(); render();
+    if ($('dlgPend').open) renderPend();
+    $('dlgView').close(); viewing = null;
+  };
+
+  // ---------- previsão de resolução ----------
+  let fcTarget = null;
+  const addDays = n => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime(); };
+
+  function openFc(id) {
+    const f = findItem(id);
+    if (!f) return;
+    fcTarget = id;
+    const t = f.it.text.length > 70 ? f.it.text.slice(0, 70) + '…' : f.it.text;
+    $('fcTip').textContent = (f.it.forecast ? 'Previsão atual: ' + C.fmtDate(f.it.forecast) + '. ' : 'Quando a Manutenção responder, marque o prazo. ') + t;
+    $('fcGrid').innerHTML = [[3, '3 dias'], [5, '5 dias'], [7, '1 semana']].map(([n, l]) =>
+      `<button class="tile" data-n="${n}"><b>${l}</b><small>${shortDate(addDays(n))}</small></button>`).join('');
+    $('fcDate').min = isoLocal(Date.now());
+    $('fcDate').value = f.it.forecast ? isoLocal(f.it.forecast) : '';
+    $('fcClear').style.display = f.it.forecast ? '' : 'none';
+    $('dlgFc').showModal();
+  }
+  function setForecast(ts) {
+    const f = findItem(fcTarget);
+    if (!f) return;
+    const prev = f.it.forecast;
+    if (ts == null) delete f.it.forecast;
+    else {
+      if (prev && prev !== ts) f.it.fcPrev = (f.it.fcPrev || []).concat(prev);
+      f.it.forecast = ts;
+    }
+    save(); render();
+    if ($('dlgPend').open) renderPend();
+    $('dlgFc').close();
+    toast(ts == null ? 'Previsão removida' : 'Previsto para ' + C.fmtDate(ts));
+  }
+  $('fcClose').onclick = () => $('dlgFc').close();
+  $('fcGrid').onclick = e => { const b = e.target.closest('[data-n]'); if (b) setForecast(addDays(+b.dataset.n)); };
+  $('fcSet').onclick = () => {
+    const m = $('fcDate').value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) { toast('Escolha uma data'); return; }
+    const ts = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+    if (ts < addDays(0)) { toast('A data não pode ser anterior a hoje'); return; }
+    setForecast(ts);
+  };
+  $('fcClear').onclick = () => setForecast(null);
+
   // ---------- início ----------
   if (!SR) $('unsupported').style.display = 'block';
   render();
+  loadThumbs();
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { /* ok */ }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

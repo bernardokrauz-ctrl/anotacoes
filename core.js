@@ -121,7 +121,8 @@
       items: v.items.map(i => ({
         s: i.sector, t: i.text, ts: i.ts,
         d: i.dest || undefined, x: i.dest ? (i.status || 'open') : undefined,
-        dn: i.doneAt || undefined, rc: i.rechecks && i.rechecks.length ? i.rechecks : undefined
+        dn: i.doneAt || undefined, rc: i.rechecks && i.rechecks.length ? i.rechecks : undefined,
+        f: i.dest && i.forecast ? i.forecast : undefined, fp: i.fcPrev && i.fcPrev.length ? i.fcPrev : undefined
       }))
     }));
   }
@@ -249,6 +250,8 @@
                   it.status = i.x === 'done' ? 'done' : 'open';
                   if (i.dn) it.doneAt = Number(i.dn) || undefined;
                   if (Array.isArray(i.rc)) it.rechecks = i.rc.map(Number).filter(Boolean);
+                  if (i.f) it.forecast = Number(i.f) || undefined;
+                  if (Array.isArray(i.fp) && i.fp.length) it.fcPrev = i.fp.map(Number).filter(Boolean);
                 }
                 return it;
               }).filter(i => i.text)
@@ -304,13 +307,58 @@
       .replace(/\b(De|Da|Do|Das|Dos|E)\b/g, (m, w, off) => (off ? w.toLowerCase() : w));
   }
 
+
+  // ---------- previsão de resolução e dias em aberto ----------
+  const DAY_MS = 86400000;
+  function dayStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function openDays(ts, now) { return Math.max(0, Math.round((dayStart(now) - dayStart(ts)) / DAY_MS)); }
+  function nDias(n) { return n + (n === 1 ? ' dia' : ' dias'); }
+  /** null = sem previsão (ou nota já resolvida); { late:true, days } se a data passou; { late:false, left } caso contrário. */
+  function forecastState(it, now) {
+    if (!it.dest || it.status === 'done' || !it.forecast) return null;
+    const diff = Math.round((dayStart(now) - it.forecast) / DAY_MS);
+    return diff > 0 ? { late: true, days: diff } : { late: false, left: -diff };
+  }
+  function openText(it, now) {
+    const d = openDays(it.ts, now);
+    return d === 0 ? 'em aberto desde hoje' : 'em aberto há ' + nDias(d);
+  }
+  function fcText(it, st) {
+    const when = st.late ? '' : st.left === 0 ? ' (hoje)' : st.left === 1 ? ' (amanhã)' : '';
+    return fmtDate(it.forecast) + when;
+  }
+  /** Linha de detalhe sob a nota no PDF da vistoria (o que o diretor lê). */
+  function vistoriaMeta(it, now) {
+    if (!it.dest) return null;
+    if (it.status === 'done') return { text: 'Encaminhado para ' + it.dest + ', resolvido' + (it.doneAt ? ' em ' + fmtDate(it.doneAt) : '') };
+    const st = forecastState(it, now);
+    const re = it.fcPrev && it.fcPrev.length ? ' (remarcada ' + it.fcPrev.length + 'x)' : '';
+    let t = 'Encaminhado para ' + it.dest + ', ' + openText(it, now) + '. ';
+    if (st && st.late) return { late: true, text: t + 'ATRASADA ' + nDias(st.days) + ': a previsão era ' + fmtDate(it.forecast) + re };
+    if (st) return { text: t + 'Previsão de resolução: ' + fcText(it, st) + re };
+    return { text: t + 'Sem previsão de resolução ainda' };
+  }
+  /** Linha de detalhe no relatório entregue à equipe (Manutenção). */
+  function maintMeta(it, now, showDest) {
+    let t = (showDest ? it.dest + '. ' : '') + 'Registrada em ' + fmtDate(it.ts);
+    if (it.status === 'done') return { text: t + '. Resolvida' + (it.doneAt ? ' em ' + fmtDate(it.doneAt) : '') };
+    t += ', ' + openText(it, now);
+    if (it.rechecks && it.rechecks.length) t += '. Conferida ' + it.rechecks.length + 'x e continua aberta (última em ' + fmtDate(it.rechecks[it.rechecks.length - 1]) + ')';
+    const st = forecastState(it, now);
+    const re = it.fcPrev && it.fcPrev.length ? ' (remarcada ' + it.fcPrev.length + 'x)' : '';
+    if (st && st.late) return { late: true, text: t + '. ATRASADA ' + nDias(st.days) + ': a previsão era ' + fmtDate(it.forecast) + re };
+    if (st) return { text: t + '. Previsão de resolução: ' + fcText(it, st) + re };
+    return { text: t + '. Previsão de resolução: ____ / ____ / ________' };
+  }
+
   /**
    * Monta o PDF (A4) e devolve o objeto jsPDF.
    * opts (todos opcionais):
    *   heading  — título grande (padrão "Relatório de vistoria")
    *   subtitle — linha abaixo do título (padrão: nome da vistoria + contagem)
    *   embed    — guarda os dados dentro do PDF para importar depois (padrão true)
-   *   meta     — função(nota) que devolve uma linha de detalhe em cinza sob a nota, ou null
+   *   meta     — função(nota) que devolve a linha de detalhe sob a nota: texto, ou { text, late } (late = vermelho), ou null
+   *   photo    — função(id) que devolve { data (JPEG em dataURL), w, h } de uma foto da nota, ou null
    *   empty    — texto quando não há notas
    */
   function buildPdf(JsPDF, vistoria, sectors, opts) {
@@ -392,19 +440,56 @@
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(11);
         const lines = doc.splitTextToSize(it.text, contentW - 14);
-        const metaTxt = opts.meta ? opts.meta(it) : null;
-        const h = lines.length * 5.2 + 3.2 + (metaTxt ? 4.4 : 0);
+        let mt = opts.meta ? opts.meta(it) : null;
+        if (typeof mt === 'string') mt = { text: mt };
+        let mLines = [];
+        if (mt) {
+          doc.setFont('helvetica', mt.late ? 'bold' : 'normal');
+          doc.setFontSize(8.5);
+          mLines = doc.splitTextToSize(mt.text, contentW - 14);
+        }
+        const PH = 22, maxW = contentW - 14;
+        const pics = (it.photos || []).map(id => (opts.photo ? opts.photo(id) : null)).filter(Boolean);
+        const rows = [];
+        let row = [], rx = 0;
+        pics.forEach(p => {
+          const w = Math.min(40, PH * p.w / p.h);
+          if (rx + w > maxW && row.length) { rows.push(row); row = []; rx = 0; }
+          row.push({ p, w, x: rx });
+          rx += w + 2;
+        });
+        if (row.length) rows.push(row);
+
+        const h = lines.length * 5.2 + 3.2 + (mt ? mLines.length * 3.8 + 1 : 0) + rows.length * (PH + 2.5);
         ensure(h);
-        doc.setDrawColor(120);
+        const bottomText = y + (lines.length - 1) * 4.5 + (mt ? 4.9 + (mLines.length - 1) * 3.8 : 0);
+        if (mt && mt.late) {
+          doc.setFillColor(214, 69, 61);
+          doc.rect(M - 1, y - 4, 1.2, bottomText - y + 5.2, 'F');
+        }
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(11);
+        doc.setDrawColor(mt && mt.late ? 214 : 120, mt && mt.late ? 69 : 120, mt && mt.late ? 61 : 120);
         doc.setLineWidth(0.3);
         doc.rect(M + 2, y - 3.4, 3.6, 3.6);
         doc.setTextColor(30);
         doc.text(lines, M + 9, y);
-        if (metaTxt) {
+        if (mt) {
+          doc.setFont('helvetica', mt.late ? 'bold' : 'normal');
           doc.setFontSize(8.5);
-          doc.setTextColor(110);
-          doc.text(metaTxt, M + 9, y + (lines.length - 1) * 4.5 + 4.9, { maxWidth: contentW - 14 });
+          if (mt.late) doc.setTextColor(200, 40, 33); else doc.setTextColor(110);
+          doc.text(mLines, M + 9, y + (lines.length - 1) * 4.5 + 4.9, { lineHeightFactor: 1.15 });
+          doc.setFont('helvetica', 'normal');
         }
+        rows.forEach((r, ri) => {
+          const top = bottomText + 3 + ri * (PH + 2.5);
+          r.forEach(c => {
+            try { doc.addImage(c.p.data, 'JPEG', M + 9 + c.x, top, c.w, PH); } catch (e) { /* foto ilegível: segue sem ela */ }
+            doc.setDrawColor(190);
+            doc.setLineWidth(0.2);
+            doc.rect(M + 9 + c.x, top, c.w, PH);
+          });
+        });
         y += h;
       });
       y += 4;
@@ -431,7 +516,7 @@
     return out.join(' ').replace(/\s+/g, ' ').trim();
   }
 
-  const api = { DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
+  const api = { dayStart, openDays, forecastState, vistoriaMeta, maintMeta, DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.VistoriaCore = api;
 })(typeof self !== 'undefined' ? self : this);

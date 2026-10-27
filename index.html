@@ -195,6 +195,31 @@
   #impInfo{font-size:16px;line-height:1.5;color:var(--slate);padding:2px 2px 4px}
   #impInfo b{display:block;color:var(--ink);font-size:18px;letter-spacing:-.01em}
   #impInfo.err{color:var(--red)}
+
+  /* ---------- fotos e previsão ---------- */
+  #cam{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;flex:none;background:var(--chalk);color:var(--indigo);border:1.5px solid var(--line)}
+  #cam:active{background:var(--line)}
+  #cam svg{width:24px;height:24px}
+  .pics{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .pic{width:64px;height:64px;border-radius:10px;overflow:hidden;border:1.5px solid var(--line);background:var(--chalk);padding:0}
+  .pic img{width:100%;height:100%;object-fit:cover;display:block}
+  .tag.photo{background:var(--chalk);color:var(--slate);font-weight:600}
+  .tag.photo svg{width:16px;height:16px}
+  .fc{display:inline-flex;align-items:center;border-radius:999px;padding:7px 12px;font-size:13px;font-weight:700;background:#e4ecfb;color:#1f4fae}
+  .fc.none{background:transparent;border:1.5px dashed var(--line);color:var(--slate);font-weight:600;padding:5.5px 11px}
+  .fc.late{background:var(--red);color:#fff}
+  .note.late{border-color:var(--red);background:#fff8f7}
+  .pitem.late{border-color:var(--red);background:#fff8f7}
+  .pfc{font-size:13px;font-weight:700;color:#1f4fae;margin-top:4px}
+  .pact.two button{background:var(--chalk);color:var(--ink);font-weight:600}
+  #fcGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  #fcGrid .tile{flex-direction:column;align-items:flex-start;gap:2px;justify-content:center}
+  #fcGrid .tile b{flex:none}
+  .fcdate{display:flex;gap:10px;align-items:center;margin-top:14px}
+  .fcdate label{font-size:14px;color:var(--slate)}
+  .fcdate input{flex:1;min-width:0;font:inherit;font-size:16px;padding:11px 12px;border:1.5px solid var(--line);border-radius:12px;background:var(--chalk)}
+  #viewImg{display:block;width:100%;max-height:62vh;object-fit:contain;background:#0e1424;border-radius:12px}
+  .btn.red{background:var(--red-bg);color:var(--red)}
   #unsupported{display:none;background:#fff4d6;color:#6b4a00;border-radius:12px;padding:10px 14px;margin:10px 14px 0;font-size:14px;flex:none}
 </style>
 </head>
@@ -239,6 +264,7 @@
     <div id="recbar"><span class="dot"></span><span id="timer">0:00</span><span class="hintr" id="recHint">‹ deslize para cancelar</span></div>
   </div>
   <button id="send" aria-label="Adicionar nota"><svg viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></svg></button>
+  <button id="cam" aria-label="Foto na última nota"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg></button>
   <button id="mic" aria-label="Segure para gravar"><svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM18 12a6 6 0 0 1-12 0M12 18v3"/></svg></button>
 </div>
 
@@ -265,6 +291,35 @@
   <div id="pendFilters"></div>
   <div class="db" id="pendList"></div>
   <div class="pfoot"><button class="btn" id="pendPdf">Gerar PDF</button></div>
+</dialog>
+
+<dialog class="sheet" id="dlgPhoto">
+  <div class="dh">Foto na nota <button id="photoClose">Fechar</button></div>
+  <div class="db">
+    <p class="tip" id="photoTip"></p>
+    <button class="btn" id="photoCam">Tirar foto agora</button>
+    <button class="btn sec" id="photoGal">Escolher da galeria</button>
+    <input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
+    <input type="file" id="fileGal" accept="image/*" multiple hidden>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="dlgView">
+  <div class="dh">Foto <button id="viewClose">Fechar</button></div>
+  <div class="db">
+    <img id="viewImg" alt="Foto da nota">
+    <button class="btn red" id="viewDel">Excluir esta foto</button>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="dlgFc">
+  <div class="dh">Previsão de resolução <button id="fcClose">Fechar</button></div>
+  <div class="db">
+    <p class="tip" id="fcTip"></p>
+    <div id="fcGrid"></div>
+    <div class="fcdate"><label for="fcDate">Outra data</label><input type="date" id="fcDate"><button class="mini" id="fcSet">Definir</button></div>
+    <button class="btn sec" id="fcClear">Tirar a previsão</button>
+  </div>
 </dialog>
 
 <dialog class="sheet" id="dlgHist">
