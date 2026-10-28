@@ -155,7 +155,7 @@
     for (const file of files) {
       try {
         const im = await loadImg(file);
-        const thumb = shrink(im, 360, 0.72), full = shrink(im, 1280, 0.7);
+        const thumb = shrink(im, 600, 0.75), full = shrink(im, 1280, 0.7);
         const id = uid();
         await putPhoto(id, thumb, full);
         TH.set(id, thumb);

@@ -448,12 +448,12 @@
           doc.setFontSize(8.5);
           mLines = doc.splitTextToSize(mt.text, contentW - 14);
         }
-        const PH = 22, maxW = contentW - 14;
+        const PH = 40, maxW = contentW - 14;
         const pics = (it.photos || []).map(id => (opts.photo ? opts.photo(id) : null)).filter(Boolean);
         const rows = [];
         let row = [], rx = 0;
         pics.forEach(p => {
-          const w = Math.min(40, PH * p.w / p.h);
+          const w = Math.min(maxW, PH * p.w / p.h);
           if (rx + w > maxW && row.length) { rows.push(row); row = []; rx = 0; }
           row.push({ p, w, x: rx });
           rx += w + 2;
