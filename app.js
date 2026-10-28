@@ -179,6 +179,7 @@
 
   // ---------- previsão ----------
   function shortDate(ts) { const d = new Date(ts), p = x => String(x).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1); }
+  const PRIO_L = { alta: 'Alta', media: 'Média', baixa: 'Baixa' };
   function fcState(it) { return C.forecastState(it, Date.now()); }
   const lateCount = () => allTracked().filter(x => { const f = fcState(x.it); return f && f.late; }).length;
   function dia(n) { return n + (n === 1 ? ' dia' : ' dias'); }
@@ -229,6 +230,7 @@
     const d = C.openDays(i.ts, Date.now());
     let h = `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>` +
       `<span class="st ${done ? 'done' : 'open'}">${done ? 'Resolvida' : d === 0 ? 'Aberta hoje' : 'Aberta há ' + dia(d)}</span>`;
+    h += `<button class="pr ${i.prio || 'none'}" data-pr>${i.prio ? PRIO_L[i.prio] : 'Prioridade'}</button>`;
     if (!done) {
       const f = fcState(i);
       h += !f ? '<button class="fc none" data-fc>Previsão</button>'
@@ -361,7 +363,7 @@
     if (name) {
       if (f.it.dest !== name) { f.it.dest = name; f.it.status = 'open'; delete f.it.doneAt; delete f.it.forecast; delete f.it.fcPrev; }
     } else {
-      delete f.it.dest; delete f.it.status; delete f.it.doneAt; delete f.it.rechecks; delete f.it.forecast; delete f.it.fcPrev;
+      delete f.it.dest; delete f.it.status; delete f.it.doneAt; delete f.it.rechecks; delete f.it.forecast; delete f.it.fcPrev; delete f.it.prio;
     }
   }
 
@@ -396,6 +398,7 @@
     $('dlgPend').showModal();
   }
 
+  const PRANK = { alta: 0, media: 1, baixa: 2 };
   function pendRows() {
     return allTracked()
       .filter(({ it }) =>
@@ -403,7 +406,7 @@
         (!P.sector || it.sector === P.sector) &&
         (P.status === 'all' ||
           (P.status === 'late' ? !!(fcState(it) && fcState(it).late) : (P.status === 'open') === (it.status !== 'done'))))
-      .sort((a, b) => a.it.ts - b.it.ts);
+      .sort((a, b) => (PRANK[a.it.prio] ?? 3) - (PRANK[b.it.prio] ?? 3) || a.it.ts - b.it.ts);
   }
 
   function pItemHtml(r) {
@@ -411,6 +414,7 @@
     const fs = fcState(it);
     let h = `<div class="pitem${done ? ' done' : ''}${fs && fs.late ? ' late' : ''}" data-id="${it.id}"><div class="ptxt">${esc(it.text)}</div>`;
     h += picsHtml(it);
+    if (it.prio) h += `<div class="pmeta"><span class="pr ${it.prio}" style="padding:3px 9px;font-size:12px">Prioridade ${PRIO_L[it.prio].toLowerCase()}</span></div>`;
     h += `<div class="pmeta"><b>${esc(it.dest)}</b>, registrada em ${C.fmtDate(it.ts)}${done ? '' : ' (' + ageText(it.ts) + ')'}</div>`;
     if (!done) {
       if (fs && fs.late) h += `<div class="pwarn">Atrasada ${dia(fs.days)}: a previsão era ${C.fmtDate(it.forecast)}</div>`;
@@ -422,7 +426,7 @@
     h += '<div class="pact">' + (done
       ? '<button data-act="reopen">Reabrir</button>'
       : '<button class="go" data-act="done">Resolvido</button><button class="no" data-act="still">Continua aberto</button>') + '</div>' +
-      '<div class="pact two">' + (done ? '' : '<button data-fc>Previsão</button>') + '<button data-photo>Foto</button></div></div>';
+      '<div class="pact two">' + (done ? '' : '<button data-fc>Previsão</button>') + '<button data-pr>Prioridade</button><button data-photo>Foto</button></div></div>';
     return h;
   }
 
@@ -477,6 +481,7 @@
       if (e.target.closest('[data-pic]')) { viewPhoto(e.target.closest('[data-pic]').dataset.pic, id); return; }
       if (e.target.closest('[data-photo]')) { openPhoto(id); return; }
       if (e.target.closest('[data-fc]')) { openFc(id); return; }
+      if (e.target.closest('[data-pr]')) { openPrio(id); return; }
     }
     const b = e.target.closest('[data-act]');
     if (!b) return;
@@ -507,7 +512,7 @@
     const fake = {
       title: heading + ' ' + C.fmtDate(now), created: now,
       items: rows.map(r => ({ sector: r.it.sector, text: r.it.text, ts: r.it.ts, dest: r.it.dest, status: r.it.status, doneAt: r.it.doneAt,
-        rechecks: r.it.rechecks, forecast: r.it.forecast, fcPrev: r.it.fcPrev, photos: r.it.photos }))
+        rechecks: r.it.rechecks, prio: r.it.prio, forecast: r.it.forecast, fcPrev: r.it.fcPrev, photos: r.it.photos }))
     };
     const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
       heading, embed: false,
@@ -718,6 +723,8 @@
     if (pc) { viewPhoto(pc.dataset.pic, pc.closest('.note').dataset.id); return; }
     const ph = e.target.closest('[data-photo]');
     if (ph) { openPhoto(ph.closest('.note').dataset.id); return; }
+    const pb = e.target.closest('[data-pr]');
+    if (pb) { openPrio(pb.closest('.note').dataset.id); return; }
     const fc = e.target.closest('[data-fc]');
     if (fc) { openFc(fc.closest('.note').dataset.id); return; }
     const b = e.target.closest('[data-del]');
@@ -816,6 +823,7 @@
       if (i.doneAt) it.doneAt = i.doneAt;
       if (i.rechecks && i.rechecks.length) it.rechecks = i.rechecks;
       if (i.forecast) it.forecast = i.forecast;
+      if (i.prio) it.prio = i.prio;
       if (i.fcPrev && i.fcPrev.length) it.fcPrev = i.fcPrev;
     }
     return it;
@@ -866,16 +874,62 @@
     $('dlgPdf').showModal();
   }
 
-  $('btnPdf').onclick = () => {
+  function mkName(prefix, base, ts) {
+    return prefix + '_' + isoLocal(ts) + '_' + C.norm(base).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf';
+  }
+
+  function fullPdf() {
     const v = cur();
-    if (!v.items.length) { toast('Nenhuma nota para o PDF'); return; }
-    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
     const doc = C.buildPdf(window.jspdf.jsPDF, v, S.sectors, {
       photo: pdfPhoto,
       meta: i => C.vistoriaMeta(i, Date.now())
     });
-    showPdf(doc, 'Vistoria_' + isoLocal(v.created) + '_' + C.norm(v.title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf');
+    showPdf(doc, mkName('Vistoria', v.title, v.created));
+  }
+
+  function sectorPdf(sector, withOld) {
+    const v = cur(), now = Date.now();
+    const own = v.items.filter(i => i.sector === sector);
+    const old = withOld ? allTracked().filter(x => x.v.id !== v.id && isOpen(x.it) && x.it.sector === sector).map(x => x.it) : [];
+    const items = own.concat(old).map(i => Object.assign({}, i, { sector }));
+    if (!items.length) { toast('Esse setor não tem notas'); return; }
+    items.sort((a, b) => (PRANK[a.prio] ?? 3) - (PRANK[b.prio] ?? 3) || a.ts - b.ts);
+    const fake = { title: v.title, created: v.created, items };
+    const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
+      heading: 'Relatório do setor ' + sector, embed: false,
+      subtitle: (v.title.includes(C.fmtDate(v.created)) ? v.title : v.title + '  •  ' + C.fmtDate(v.created)) + '  •  ' + plural(items.length, 'apontamento', 'apontamentos') +
+        (old.length ? ' (' + plural(old.length, 'de visita anterior', 'de visitas anteriores') + ')' : ''),
+      photo: pdfPhoto,
+      meta: i => C.vistoriaMeta(i, now)
+    });
+    showPdf(doc, mkName('Setor-' + C.norm(sector).replace(/[^a-z0-9]+/g, '-'), v.title, v.created));
+  }
+
+  $('btnPdf').onclick = () => {
+    const v = cur();
+    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
+    const own = {};
+    v.items.forEach(i => { own[i.sector] = (own[i.sector] || 0) + 1; });
+    const oldSec = new Set(allTracked().filter(x => x.v.id !== v.id && isOpen(x.it)).map(x => x.it.sector));
+    const secs = S.sectors.filter(x => own[x] || oldSec.has(x));
+    if (!secs.length) { toast('Nenhuma nota para o PDF'); return; }
+    $('repAll').textContent = 'Vistoria completa' + (v.items.length ? ' (' + plural(v.items.length, 'nota', 'notas') + ')' : '');
+    $('repAll').style.display = v.items.length ? '' : 'none';
+    $('repGrid').innerHTML = secs.map(x => `
+      <button class="tile" data-s="${esc(x)}"><i style="background:${colorFor(x)}"></i><b>${esc(x)}</b>${own[x] ? `<small>${own[x]}</small>` : '<small>antigas</small>'}</button>`).join('');
+    $('dlgRep').showModal();
   };
+  $('repClose').onclick = () => $('dlgRep').close();
+  $('repAll').onclick = () => {
+    if (!cur().items.length) return;
+    $('dlgRep').close(); fullPdf();
+  };
+  $('repGrid').onclick = e => {
+    const b = e.target.closest('[data-s]');
+    if (!b) return;
+    $('dlgRep').close(); sectorPdf(b.dataset.s, $('repOld').checked);
+  };
+
   $('pdfClose').onclick = () => $('dlgPdf').close();
   $('pdfSave').onclick = () => {
     const a = document.createElement('a');
@@ -983,6 +1037,30 @@
     setForecast(ts);
   };
   $('fcClear').onclick = () => setForecast(null);
+
+  // ---------- prioridade ----------
+  let prioTarget = null;
+  function openPrio(id) {
+    const f = findItem(id);
+    if (!f) return;
+    prioTarget = id;
+    const t = f.it.text.length > 70 ? f.it.text.slice(0, 70) + '…' : f.it.text;
+    $('prioTip').textContent = t;
+    $('prioGrid').innerHTML = ['alta', 'media', 'baixa'].map(k =>
+      `<button class="tile ${k}${f.it.prio === k ? ' on' : ''}" data-p="${k}"><i></i><b>${PRIO_L[k]}</b></button>`).join('') +
+      `<button class="tile${!f.it.prio ? ' on' : ''}" data-p=""><i style="background:#9aa6b8"></i><b>Sem prioridade</b></button>`;
+    $('dlgPrio').showModal();
+  }
+  $('prioClose').onclick = () => $('dlgPrio').close();
+  $('prioGrid').onclick = e => {
+    const b = e.target.closest('[data-p]');
+    const f = b && findItem(prioTarget);
+    if (!f) return;
+    if (b.dataset.p) f.it.prio = b.dataset.p; else delete f.it.prio;
+    save(); render();
+    if ($('dlgPend').open) renderPend();
+    $('dlgPrio').close();
+  };
 
   // ---------- início ----------
   if (!SR) $('unsupported').style.display = 'block';

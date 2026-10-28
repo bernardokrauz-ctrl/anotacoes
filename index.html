@@ -220,6 +220,16 @@
   .fcdate input{flex:1;min-width:0;font:inherit;font-size:16px;padding:11px 12px;border:1.5px solid var(--line);border-radius:12px;background:var(--chalk)}
   #viewImg{display:block;width:100%;max-height:62vh;object-fit:contain;background:#0e1424;border-radius:12px}
   .btn.red{background:var(--red-bg);color:var(--red)}
+
+  .pr{display:inline-flex;align-items:center;border-radius:999px;padding:7px 12px;font-size:13px;font-weight:800}
+  .pr.none{background:transparent;border:1.5px dashed var(--line);color:var(--slate);font-weight:600;padding:5.5px 11px}
+  .pr.alta{background:#c8281f;color:#fff}
+  .pr.media{background:#f2a516;color:#3a2500}
+  .pr.baixa{background:#2f8f5b;color:#fff}
+  .tile.alta i{background:#c8281f}.tile.media i{background:#f2a516}.tile.baixa i{background:#2f8f5b}
+  .chkrow{display:flex;gap:10px;align-items:center;margin:4px 2px 14px;font-size:15px;color:var(--ink)}
+  .chkrow input{width:22px;height:22px;accent-color:var(--indigo)}
+  .sub{margin:16px 2px 8px;font-size:14px;font-weight:700;color:var(--slate)}
   #unsupported{display:none;background:#fff4d6;color:#6b4a00;border-radius:12px;padding:10px 14px;margin:10px 14px 0;font-size:14px;flex:none}
 </style>
 </head>
@@ -322,6 +332,24 @@
   </div>
 </dialog>
 
+<dialog class="sheet" id="dlgPrio">
+  <div class="dh">Prioridade <button id="prioClose">Fechar</button></div>
+  <div class="db">
+    <p class="tip" id="prioTip"></p>
+    <div id="prioGrid"></div>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="dlgRep">
+  <div class="dh">Gerar PDF <button id="repClose">Fechar</button></div>
+  <div class="db">
+    <button class="btn" id="repAll" style="margin-top:0">Vistoria completa</button>
+    <div class="sub">Ou só um setor</div>
+    <label class="chkrow"><input type="checkbox" id="repOld" checked> Incluir pendências abertas de visitas anteriores</label>
+    <div id="repGrid"></div>
+  </div>
+</dialog>
+
 <dialog class="sheet" id="dlgHist">
   <div class="dh">Vistorias <button id="histClose">Fechar</button></div>
   <div class="db">
@@ -352,7 +380,7 @@
 </dialog>
 
 <script src="jspdf.umd.min.js"></script>
-<script src="core.js?v=8"></script>
-<script src="app.js?v=8"></script>
+<script src="core.js?v=9"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

@@ -122,7 +122,7 @@
         s: i.sector, t: i.text, ts: i.ts,
         d: i.dest || undefined, x: i.dest ? (i.status || 'open') : undefined,
         dn: i.doneAt || undefined, rc: i.rechecks && i.rechecks.length ? i.rechecks : undefined,
-        f: i.dest && i.forecast ? i.forecast : undefined, fp: i.fcPrev && i.fcPrev.length ? i.fcPrev : undefined
+        f: i.dest && i.forecast ? i.forecast : undefined, pr: i.dest && i.prio ? i.prio : undefined, fp: i.fcPrev && i.fcPrev.length ? i.fcPrev : undefined
       }))
     }));
   }
@@ -250,6 +250,7 @@
                   it.status = i.x === 'done' ? 'done' : 'open';
                   if (i.dn) it.doneAt = Number(i.dn) || undefined;
                   if (Array.isArray(i.rc)) it.rechecks = i.rc.map(Number).filter(Boolean);
+                  if (['alta', 'media', 'baixa'].includes(i.pr)) it.prio = i.pr;
                   if (i.f) it.forecast = Number(i.f) || undefined;
                   if (Array.isArray(i.fp) && i.fp.length) it.fcPrev = i.fp.map(Number).filter(Boolean);
                 }
@@ -264,8 +265,8 @@
     // 2) leitura do texto desenhado no PDF (PDFs antigos)
     const blocks = pdfTextBlocks(s);
     if (!blocks.some(b => near(b.size, 20) && clean(b.text) === 'Relatório de vistoria')) {
-      if (blocks.some(b => near(b.size, 20) && /^Relatório (para|de pendências)/.test(clean(b.text)))) {
-        throw new Error('Esse é um relatório de pendências feito para a equipe, e não dá para importar. Importe o PDF da vistoria.');
+      if (blocks.some(b => near(b.size, 20) && /^Relatório (para|de pendências|do setor)/.test(clean(b.text)))) {
+        throw new Error('Esse é um relatório feito para uma equipe ou setor, e não dá para importar. Importe o PDF da vistoria.');
       }
       throw new Error(s.includes('/FlateDecode')
         ? 'Esse PDF foi comprimido por outro programa. Use o PDF original, do jeito que o app gerou.'
@@ -350,6 +351,12 @@
     if (st) return { text: t + '. Previsão de resolução: ' + fcText(it, st) + re };
     return { text: t + '. Previsão de resolução: ____ / ____ / ________' };
   }
+
+  const PRIO = {
+    alta: { label: 'ALTA', rgb: [200, 40, 31] },
+    media: { label: 'MÉDIA', rgb: [224, 140, 0] },
+    baixa: { label: 'BAIXA', rgb: [47, 143, 91] }
+  };
 
   /**
    * Monta o PDF (A4) e devolve o objeto jsPDF.
@@ -439,7 +446,8 @@
       g.items.forEach(it => {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(11);
-        const lines = doc.splitTextToSize(it.text, contentW - 14);
+        const pr = it.dest && PRIO[it.prio] ? PRIO[it.prio] : null;
+        const lines = doc.splitTextToSize(it.text, contentW - 14 - (pr ? 22 : 0));
         let mt = opts.meta ? opts.meta(it) : null;
         if (typeof mt === 'string') mt = { text: mt };
         let mLines = [];
@@ -463,6 +471,10 @@
         const h = lines.length * 5.2 + 3.2 + (mt ? mLines.length * 3.8 + 1 : 0) + rows.length * (PH + 2.5);
         ensure(h);
         const bottomText = y + (lines.length - 1) * 4.5 + (mt ? 4.9 + (mLines.length - 1) * 3.8 : 0);
+        if (pr && !(mt && mt.late)) {
+          doc.setFillColor(...pr.rgb);
+          doc.rect(M - 1, y - 4, 1.2, bottomText - y + 5.2, 'F');
+        }
         if (mt && mt.late) {
           doc.setFillColor(214, 69, 61);
           doc.rect(M - 1, y - 4, 1.2, bottomText - y + 5.2, 'F');
@@ -474,6 +486,17 @@
         doc.rect(M + 2, y - 3.4, 3.6, 3.6);
         doc.setTextColor(30);
         doc.text(lines, M + 9, y);
+        if (pr) {
+          doc.setFillColor(...pr.rgb);
+          doc.roundedRect(W - M - 19, y - 4, 19, 5.6, 1.2, 1.2, 'F');
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(255);
+          doc.text(pr.label, W - M - 9.5, y - 0.1, { align: 'center' });
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(11);
+          doc.setTextColor(30);
+        }
         if (mt) {
           doc.setFont('helvetica', mt.late ? 'bold' : 'normal');
           doc.setFontSize(8.5);
@@ -516,7 +539,7 @@
     return out.join(' ').replace(/\s+/g, ' ').trim();
   }
 
-  const api = { dayStart, openDays, forecastState, vistoriaMeta, maintMeta, DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
+  const api = { PRIO, dayStart, openDays, forecastState, vistoriaMeta, maintMeta, DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.VistoriaCore = api;
 })(typeof self !== 'undefined' ? self : this);
