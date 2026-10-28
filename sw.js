@@ -1,4 +1,4 @@
-const CACHE = 'vistoria-v7';
+const CACHE = 'vistoria-v8';
 const ASSETS = [
   './', './index.html', './app.js', './core.js', './jspdf.umd.min.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png'
@@ -20,7 +20,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         if (res && res.ok && new URL(e.request.url).origin === location.origin) {
           const copy = res.clone();
