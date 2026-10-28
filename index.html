@@ -230,6 +230,24 @@
   .chkrow{display:flex;gap:10px;align-items:center;margin:4px 2px 14px;font-size:15px;color:var(--ink)}
   .chkrow input{width:22px;height:22px;accent-color:var(--indigo)}
   .sub{margin:16px 2px 8px;font-size:14px;font-weight:700;color:var(--slate)}
+
+  .more{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;color:var(--slate);margin:-6px -4px -6px 0}
+  .more:active{background:var(--chalk)}
+  .mrow{display:block;width:100%;text-align:left;padding:15px 14px;border-radius:12px;font-size:17px;font-weight:600;border-bottom:1px solid var(--line)}
+  .mrow:last-child{border-bottom:0}
+  .mrow:active{background:var(--chalk)}
+  .mrow.red{color:var(--red)}
+  #toast.act{pointer-events:auto;white-space:nowrap;display:flex;align-items:center;gap:14px;padding:8px 8px 8px 18px}
+  #toast button{background:var(--yellow);color:var(--indigo);font-weight:800;border-radius:999px;padding:8px 14px;font-size:14px}
+  .badge.late{background:var(--red);color:#fff}
+  #btnHist.warn::after{content:"";position:absolute;top:6px;right:6px;width:10px;height:10px;border-radius:50%;background:var(--red);border:2px solid var(--indigo)}
+  .bk{font-size:14px;color:var(--slate);line-height:1.4;margin:0 2px 4px}
+  .bk.due{color:var(--red);font-weight:600}
+  .bkrow{display:flex;gap:10px}
+  .bkrow .btn{flex:1}
+  .chip.p-alta.on{background:#c8281f;border-color:#c8281f}
+  .chip.p-media.on{background:#f2a516;border-color:#f2a516;color:#3a2500}
+  .chip.p-baixa.on{background:#2f8f5b;border-color:#2f8f5b}
   #unsupported{display:none;background:#fff4d6;color:#6b4a00;border-radius:12px;padding:10px 14px;margin:10px 14px 0;font-size:14px;flex:none}
 </style>
 </head>
@@ -292,6 +310,7 @@
   <div class="dh"><span id="destTitle">Encaminhar para</span> <button id="destClose">Fechar</button></div>
   <div class="db">
     <p class="tip" id="destTip"></p>
+    <div id="destPrioWrap"><div class="sub" style="margin-top:0">Prioridade das próximas notas</div><div class="fl" id="destPrio" style="margin-bottom:16px"></div><div class="sub">Encaminhar para</div></div>
     <div id="destGrid"></div>
   </div>
 </dialog>
@@ -350,6 +369,14 @@
   </div>
 </dialog>
 
+<dialog class="sheet" id="dlgMore">
+  <div class="dh">Nota <button id="moreClose">Fechar</button></div>
+  <div class="db">
+    <p class="tip" id="moreTip"></p>
+    <div id="moreList"></div>
+  </div>
+</dialog>
+
 <dialog class="sheet" id="dlgHist">
   <div class="dh">Vistorias <button id="histClose">Fechar</button></div>
   <div class="db">
@@ -357,6 +384,10 @@
     <button class="btn" id="btnNew">Nova vistoria</button>
     <button class="btn sec" id="btnImport">Importar PDF</button>
     <input type="file" id="fileImport" accept="application/pdf,.pdf" hidden>
+    <div class="sub">Backup</div>
+    <p class="bk" id="bkInfo"></p>
+    <div class="bkrow"><button class="btn" id="btnBackup">Fazer backup</button><button class="btn sec" id="btnRestore">Restaurar</button></div>
+    <input type="file" id="fileRestore" accept="application/json,.json" hidden>
   </div>
 </dialog>
 
@@ -370,7 +401,7 @@
 </dialog>
 
 <dialog class="sheet" id="dlgPdf">
-  <div class="dh">PDF pronto <button id="pdfClose">Fechar</button></div>
+  <div class="dh"><span id="pdfHead">PDF pronto</span> <button id="pdfClose">Fechar</button></div>
   <div class="db">
     <div id="pdfInfo" style="color:var(--slate);font-size:14px"></div>
     <button class="btn" id="pdfShare">Compartilhar</button>
@@ -379,8 +410,7 @@
   </div>
 </dialog>
 
-<script src="jspdf.umd.min.js"></script>
-<script src="core.js?v=9"></script>
-<script src="app.js?v=9"></script>
+<script src="core.js?v=10"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

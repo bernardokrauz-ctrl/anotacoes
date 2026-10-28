@@ -328,10 +328,38 @@
     const when = st.late ? '' : st.left === 0 ? ' (hoje)' : st.left === 1 ? ' (amanhã)' : '';
     return fmtDate(it.forecast) + when;
   }
+  /** " em 30/10/2026 (em 3 dias, dentro da previsão)" */
+  function doneText(it) {
+    if (!it.doneAt) return '';
+    let t = ' em ' + fmtDate(it.doneAt) + ' (em ' + nDias(openDays(it.ts, it.doneAt));
+    if (it.forecast) t += dayStart(it.doneAt) <= it.forecast ? ', dentro da previsão' : ', fora da previsão';
+    return t + ')';
+  }
+  /** Tempo de resolução de um conjunto de notas encaminhadas. */
+  function resolutionStats(items) {
+    const done = items.filter(i => i.dest && i.status === 'done' && i.doneAt);
+    const withFc = done.filter(i => i.forecast);
+    return {
+      n: done.length,
+      avg: done.length ? done.reduce((a, i) => a + openDays(i.ts, i.doneAt), 0) / done.length : null,
+      withFc: withFc.length,
+      onTime: withFc.filter(i => dayStart(i.doneAt) <= i.forecast).length
+    };
+  }
+  /** Interpreta "prioridade alta ..." (ou "urgência média") em qualquer ponto da fala. */
+  function parsePrio(text) {
+    const re = /(^|[\s,.;:-])(?:prioridade|urg[eê]ncia)\s+(alta|m[eé]dia|baixa)\b[\s,.;:!?-]*/i;
+    const m = String(text || '').match(re);
+    if (!m) return { prio: null, text: text };
+    const k = norm(m[2]);
+    const rest = (text.slice(0, m.index) + m[1] + text.slice(m.index + m[0].length)).replace(/\s+/g, ' ').replace(/^[\s,.;:-]+|[\s,;:-]+$/g, '');
+    return { prio: k === 'media' ? 'media' : k, text: cap(rest) };
+  }
+
   /** Linha de detalhe sob a nota no PDF da vistoria (o que o diretor lê). */
   function vistoriaMeta(it, now) {
     if (!it.dest) return null;
-    if (it.status === 'done') return { text: 'Encaminhado para ' + it.dest + ', resolvido' + (it.doneAt ? ' em ' + fmtDate(it.doneAt) : '') };
+    if (it.status === 'done') return { text: 'Encaminhado para ' + it.dest + ', resolvido' + doneText(it) };
     const st = forecastState(it, now);
     const re = it.fcPrev && it.fcPrev.length ? ' (remarcada ' + it.fcPrev.length + 'x)' : '';
     let t = 'Encaminhado para ' + it.dest + ', ' + openText(it, now) + '. ';
@@ -342,7 +370,7 @@
   /** Linha de detalhe no relatório entregue à equipe (Manutenção). */
   function maintMeta(it, now, showDest) {
     let t = (showDest ? it.dest + '. ' : '') + 'Registrada em ' + fmtDate(it.ts);
-    if (it.status === 'done') return { text: t + '. Resolvida' + (it.doneAt ? ' em ' + fmtDate(it.doneAt) : '') };
+    if (it.status === 'done') return { text: t + '. Resolvida' + doneText(it) };
     t += ', ' + openText(it, now);
     if (it.rechecks && it.rechecks.length) t += '. Conferida ' + it.rechecks.length + 'x e continua aberta (última em ' + fmtDate(it.rechecks[it.rechecks.length - 1]) + ')';
     const st = forecastState(it, now);
@@ -420,6 +448,51 @@
     doc.line(M, 30, W - M, 30);
     doc.setLineDashPattern([], 0);
     y = 46;
+
+    // Resumo (tabela) — tamanhos de letra diferentes dos que o leitor de PDF usa
+    const sm = opts.summary;
+    if (sm && sm.rows && sm.rows.length) {
+      const ws = sm.widths, rowH = 6.2;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(...TEAL);
+      doc.text(sm.title || 'Resumo', M, y - 2);
+      y += 1.5;
+      const drawRow = (cells, kind) => {
+        if (kind === 'head') { doc.setFillColor(...TEAL); doc.rect(M, y, contentW, rowH, 'F'); }
+        else if (kind === 'total') { doc.setFillColor(232, 236, 243); doc.rect(M, y, contentW, rowH, 'F'); }
+        let x = M;
+        cells.forEach((c, ci) => {
+          const cell = typeof c === 'object' && c !== null ? c : { v: c };
+          doc.setFont('helvetica', kind ? 'bold' : (cell.b ? 'bold' : 'normal'));
+          doc.setFontSize(kind === 'head' ? 7.5 : 9);
+          if (kind === 'head') doc.setTextColor(255);
+          else if (cell.c) doc.setTextColor(...cell.c);
+          else doc.setTextColor(40);
+          const txt = String(cell.v);
+          if (ci === 0) doc.text(txt, x + 2, y + rowH - 1.9, { maxWidth: ws[0] - 3 });
+          else doc.text(txt, x + ws[ci] / 2, y + rowH - 1.9, { align: 'center' });
+          x += ws[ci];
+        });
+        if (!kind) { doc.setDrawColor(225); doc.setLineWidth(0.2); doc.line(M, y + rowH, M + contentW, y + rowH); }
+        y += rowH;
+      };
+      drawRow(sm.head, 'head');
+      sm.rows.forEach(r => { ensure(rowH); drawRow(r); });
+      if (sm.total) drawRow(sm.total, 'total');
+      y += 4;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      (sm.notes || []).forEach(n => {
+        const nl = doc.splitTextToSize(n.text || n, contentW);
+        ensure(nl.length * 4.2);
+        if (n.c) doc.setTextColor(...n.c); else doc.setTextColor(70);
+        doc.setFont('helvetica', n.b ? 'bold' : 'normal');
+        doc.text(nl, M, y + 1);
+        y += nl.length * 4.2;
+      });
+      y += 9;
+    }
 
     if (!groups.length) {
       doc.setTextColor(90);
@@ -518,6 +591,23 @@
       y += 4;
     });
 
+    if (opts.signature) {
+      ensure(30);
+      y += 10;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(60);
+      doc.setDrawColor(120);
+      doc.setLineWidth(0.3);
+      const half = contentW * 0.62;
+      doc.line(M, y + 8, M + half, y + 8);
+      doc.line(M + half + 10, y + 8, W - M, y + 8);
+      doc.setFontSize(9);
+      doc.text(opts.signature, M, y + 12.5);
+      doc.text('Data', M + half + 10, y + 12.5);
+      y += 16;
+    }
+
     footer();
     return doc;
   }
@@ -539,7 +629,7 @@
     return out.join(' ').replace(/\s+/g, ' ').trim();
   }
 
-  const api = { PRIO, dayStart, openDays, forecastState, vistoriaMeta, maintMeta, DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
+  const api = { PRIO, doneText, resolutionStats, parsePrio, dayStart, openDays, forecastState, vistoriaMeta, maintMeta, DEFAULT_SECTORS, norm, cap, titleCase, parseSegment, mergeResults, groupItems, fmtDate, fmtTime, buildPdf, parseVistoriaPdf, resolveSector };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.VistoriaCore = api;
 })(typeof self !== 'undefined' ? self : this);

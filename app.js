@@ -8,6 +8,7 @@
   const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM18 12a6 6 0 0 1-12 0M12 18v3"/></svg>';
   const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg>';
   const ICON_CAM = '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>';
+  const ICON_MORE = '<svg viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3.2"/></svg>';
   const ICON_ARROW = '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
   // ---------- estado ----------
@@ -25,6 +26,7 @@
         // dados salvos por versões anteriores não têm os campos de encaminhamento
         if (!Array.isArray(d.dests) || !d.dests.length) d.dests = ['Manutenção'];
         if (d.currentDest === undefined) d.currentDest = null;
+        if (d.currentPrio === undefined) d.currentPrio = null;
         return d;
       }
     } catch (e) { /* ignora */ }
@@ -79,13 +81,20 @@
   }
 
 
-  // ---------- fotos (IndexedDB: miniatura + versão reduzida) ----------
-  const TH = new Map();   // id -> { d (dataURL), w, h }  miniaturas em memória
+  // ---------- fotos (IndexedDB) ----------
+  // mini  = ~200 px, usada na tela (fica toda em memória, é leve)
+  // thumb = ~600 px, usada no PDF (carregada só quando gera o PDF)
+  // full  = ~1280 px, usada ao abrir a foto
+  const TH = new Map();   // id -> { d, w, h }  minis em memória
+  const MID = new Map();  // id -> { d, w, h }  cache das versões do PDF
   let dbp = null;
   function db() {
     if (!dbp) dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('vistoria-fotos', 1);
-      r.onupgradeneeded = () => { r.result.createObjectStore('thumb', { keyPath: 'id' }); r.result.createObjectStore('full', { keyPath: 'id' }); };
+      const r = indexedDB.open('vistoria-fotos', 2);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        ['thumb', 'full', 'mini'].forEach(n => { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: 'id' }); });
+      };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
@@ -100,39 +109,67 @@
       t.onerror = t.onabort = () => rej(t.error);
     }));
   }
-  function putPhoto(id, thumb, full) {
-    return dbRun(['thumb', 'full'], 'readwrite', t => {
+  const STORES = ['mini', 'thumb', 'full'];
+  function putPhoto(id, mini, thumb, full) {
+    return dbRun(STORES, 'readwrite', t => {
+      t.objectStore('mini').put({ id, d: mini.d, w: mini.w, h: mini.h });
       t.objectStore('thumb').put({ id, d: thumb.d, w: thumb.w, h: thumb.h });
       t.objectStore('full').put({ id, d: full.d });
     });
   }
   function delPhotoData(ids) {
     ids = (ids || []).filter(Boolean);
-    ids.forEach(id => TH.delete(id));
+    ids.forEach(id => { TH.delete(id); MID.delete(id); });
     if (!ids.length) return;
-    dbRun(['thumb', 'full'], 'readwrite', t => ids.forEach(id => { t.objectStore('thumb').delete(id); t.objectStore('full').delete(id); })).catch(() => {});
+    dbRun(STORES, 'readwrite', t => ids.forEach(id => STORES.forEach(n => t.objectStore(n).delete(id)))).catch(() => {});
   }
   const photosOf = items => [].concat(...items.map(i => i.photos || []));
+  const allItems = () => [].concat(...S.vistorias.map(v => v.items));
 
-  let photosLoaded = false;
-  function loadThumbs() {
-    return dbRun(['thumb'], 'readonly', t => t.objectStore('thumb').getAll()).then(rows => {
-      (rows || []).forEach(r => TH.set(r.id, { d: r.d, w: r.w, h: r.h }));
-      photosLoaded = true;
-      // limpa fotos órfãs (de notas que não existem mais)
-      const used = new Set(photosOf([].concat(...S.vistorias.map(v => v.items))));
-      const orphans = (rows || []).map(r => r.id).filter(id => !used.has(id));
+  async function loadThumbs() {
+    try {
+      const minis = await dbRun(['mini'], 'readonly', t => t.objectStore('mini').getAll());
+      (minis || []).forEach(r => TH.set(r.id, { d: r.d, w: r.w, h: r.h }));
+      const keys = await dbRun(['thumb'], 'readonly', t => t.objectStore('thumb').getAllKeys());
+      const used = new Set(photosOf(allItems()));
+      const orphans = (keys || []).filter(id => !used.has(id));
       if (orphans.length) delPhotoData(orphans);
       render();
       if ($('dlgPend').open) renderPend();
-    }).catch(() => {});
+      // fotos das versões anteriores não têm mini: cria agora, aos poucos
+      const missing = (keys || []).filter(id => used.has(id) && !TH.has(id));
+      for (const id of missing) {
+        const r = await dbRun(['thumb'], 'readonly', t => t.objectStore('thumb').get(id));
+        if (!r) continue;
+        const im = await loadImg(r.d);
+        const mini = shrink(im, 200, 0.7);
+        await dbRun(['mini'], 'readwrite', t => t.objectStore('mini').put({ id, d: mini.d, w: mini.w, h: mini.h }));
+        TH.set(id, mini);
+      }
+      if (missing.length) { render(); if ($('dlgPend').open) renderPend(); }
+    } catch (e) { /* sem IndexedDB: segue sem fotos */ }
   }
 
-  function loadImg(file) {
+  // carrega as versões de PDF das fotos destas notas
+  async function loadMids(items) {
+    const ids = photosOf(items).filter(id => !MID.has(id));
+    if (!ids.length) return;
+    try {
+      const rows = await dbRun(['thumb'], 'readonly', t => {
+        const st = t.objectStore('thumb'), out = [];
+        ids.forEach(id => { const q = st.get(id); q.onsuccess = () => q.result && out.push(q.result); });
+        return { get result() { return out; } };
+      });
+      (rows || []).forEach(r => MID.set(r.id, { d: r.d, w: r.w, h: r.h }));
+    } catch (e) { /* usa a mini */ }
+  }
+
+  function loadImg(src) {
     return new Promise((res, rej) => {
-      const u = URL.createObjectURL(file), im = new Image();
-      im.onload = () => { URL.revokeObjectURL(u); res(im); };
-      im.onerror = () => { URL.revokeObjectURL(u); rej(new Error('img')); };
+      const isFile = typeof src !== 'string';
+      const u = isFile ? URL.createObjectURL(src) : src, im = new Image();
+      im.onload = () => { if (isFile) URL.revokeObjectURL(u); res(im); };
+      im.onerror = () => { if (isFile) URL.revokeObjectURL(u); rej(new Error('img')); };
       im.src = u;
     });
   }
@@ -155,10 +192,11 @@
     for (const file of files) {
       try {
         const im = await loadImg(file);
-        const thumb = shrink(im, 600, 0.75), full = shrink(im, 1280, 0.7);
+        const mini = shrink(im, 200, 0.7), thumb = shrink(im, 600, 0.75), full = shrink(im, 1280, 0.7);
         const id = uid();
-        await putPhoto(id, thumb, full);
-        TH.set(id, thumb);
+        await putPhoto(id, mini, thumb, full);
+        TH.set(id, mini);
+        MID.set(id, thumb);
         (f.it.photos = f.it.photos || []).push(id);
         ok++;
       } catch (e) { /* segue com as outras */ }
@@ -172,10 +210,29 @@
     const ids = it.photos || [];
     if (!ids.length) return '';
     return '<div class="pics">' + ids.map(id => TH.has(id)
-      ? `<button class="pic" data-pic="${id}" aria-label="Ver foto"><img src="${TH.get(id).d}" alt="Foto da nota"></button>`
+      ? `<button class="pic" data-pic="${id}" aria-label="Ver foto"><img src="${TH.get(id).d}" alt="Foto da nota" decoding="async"></button>`
       : '<span class="pic"></span>').join('') + '</div>';
   }
-  const pdfPhoto = id => { const t = TH.get(id); return t ? { data: t.d, w: t.w, h: t.h } : null; };
+  const pdfPhoto = id => { const t = MID.get(id) || TH.get(id); return t ? { data: t.d, w: t.w, h: t.h } : null; };
+
+  // ---------- biblioteca de PDF (carrega só quando precisa) ----------
+  let pdfLib = null;
+  function needPdf() {
+    if (window.jspdf) return Promise.resolve();
+    if (!pdfLib) pdfLib = new Promise((res, rej) => {
+      const sc = document.createElement('script');
+      sc.src = 'jspdf.umd.min.js';
+      sc.onload = () => res();
+      sc.onerror = () => { pdfLib = null; rej(new Error('pdf')); };
+      document.head.appendChild(sc);
+    });
+    return pdfLib;
+  }
+  async function preparePdf(items) {
+    try { await needPdf(); } catch (e) { toast('A biblioteca de PDF não carregou'); return false; }
+    await loadMids(items);
+    return true;
+  }
 
   // ---------- previsão ----------
   function shortDate(ts) { const d = new Date(ts), p = x => String(x).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1); }
@@ -185,14 +242,30 @@
   function dia(n) { return n + (n === 1 ? ' dia' : ' dias'); }
 
   // ---------- UI ----------
-  let toastT;
-  function toast(msg) {
+  let toastT, toastFn = null;
+  function toast(msg, action, fn) {
     const t = $('toast');
-    t.textContent = msg;
+    t.innerHTML = '';
+    t.appendChild(document.createTextNode(msg));
+    toastFn = null;
+    if (action) {
+      const b = document.createElement('button');
+      b.textContent = action;
+      t.appendChild(b);
+      toastFn = fn;
+    }
+    t.classList.toggle('act', !!action);
     t.classList.add('show');
     clearTimeout(toastT);
-    toastT = setTimeout(() => t.classList.remove('show'), 2300);
+    toastT = setTimeout(() => { t.classList.remove('show', 'act'); toastFn = null; }, action ? 5500 : 2300);
   }
+  $('toast').addEventListener('click', e => {
+    if (!e.target.closest('button') || !toastFn) return;
+    const fn = toastFn;
+    toastFn = null;
+    $('toast').classList.remove('show', 'act');
+    fn();
+  });
 
   function esc(s) {
     return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -212,7 +285,7 @@
     $('sectorName').textContent = S.currentSector;
     $('sectorDot').style.background = colorFor(S.currentSector);
 
-    $('destVal').textContent = S.currentDest || 'Nenhum';
+    $('destVal').textContent = S.currentDest ? S.currentDest + (S.currentPrio ? ', ' + PRIO_L[S.currentPrio].toLowerCase() : '') : 'Nenhum';
     $('destBar').classList.toggle('on', !!S.currentDest);
 
     const other = openInOtherVisits(S.currentSector);
@@ -222,21 +295,22 @@
     const oc = openCount();
     $('badge').textContent = oc > 99 ? '99+' : oc;
     $('badge').style.display = oc ? '' : 'none';
+    $('badge').classList.toggle('late', lateCount() > 0);
+    $('btnHist').classList.toggle('warn', backupDue());
   }
 
-  function destTag(i) {
-    if (!i.dest) return '<button class="tag none" data-dest>Encaminhar</button>';
+  // Resumo da nota: só mostra o que existe; as ações ficam no menu "⋯"
+  function noteChips(i) {
+    if (!i.dest) return '';
     const done = i.status === 'done';
     const d = C.openDays(i.ts, Date.now());
-    let h = `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>` +
-      `<span class="st ${done ? 'done' : 'open'}">${done ? 'Resolvida' : d === 0 ? 'Aberta hoje' : 'Aberta há ' + dia(d)}</span>`;
-    h += `<button class="pr ${i.prio || 'none'}" data-pr>${i.prio ? PRIO_L[i.prio] : 'Prioridade'}</button>`;
-    if (!done) {
-      const f = fcState(i);
-      h += !f ? '<button class="fc none" data-fc>Previsão</button>'
-        : f.late ? `<button class="fc late" data-fc>Atrasada ${dia(f.days)}</button>`
-        : `<button class="fc" data-fc>Previsto ${f.left === 0 ? 'para hoje' : shortDate(i.forecast)}</button>`;
-    }
+    let h = `<button class="tag" data-dest aria-label="Mudar encaminhamento">${ICON_ARROW}${esc(i.dest)}</button>`;
+    if (i.prio) h += `<button class="pr ${i.prio}" data-pr>${PRIO_L[i.prio]}</button>`;
+    if (done) return h + '<span class="st done">Resolvida</span>';
+    const f = fcState(i);
+    if (f && f.late) return h + `<button class="fc late" data-fc>Atrasada ${dia(f.days)}</button>`;
+    h += `<span class="st open">${d === 0 ? 'Aberta hoje' : 'Aberta há ' + dia(d)}</span>`;
+    if (f) h += `<button class="fc" data-fc>Previsto ${f.left === 0 ? 'para hoje' : shortDate(i.forecast)}</button>`;
     return h;
   }
 
@@ -253,31 +327,38 @@
     $('list').innerHTML = groups.map(g => `
       <section class="group">
         <div class="ghead"><i style="background:${colorFor(g.name)}"></i><h2>${esc(g.name)}</h2><span>${g.items.length}</span></div>
-        ${g.items.map(i => `
-          <div class="note${(() => { const f = fcState(i); return f && f.late ? ' late' : ''; })()}" data-id="${i.id}" style="--c:${colorFor(i.sector)}">
+        ${g.items.map(i => {
+          const f = fcState(i);
+          return `
+          <div class="note${f && f.late ? ' late' : ''}" data-id="${i.id}" style="--c:${colorFor(i.sector)}">
             <div class="ntxt" contenteditable="true" spellcheck="false">${esc(i.text)}</div>
             ${picsHtml(i)}
             <div class="nmeta">
               <div class="nleft">
                 <label class="pillwrap"><span class="d"></span><select data-move aria-label="Mudar de setor">${opts(i.sector)}</select></label>
-                ${destTag(i)}
-                <button class="tag photo" data-photo aria-label="Adicionar foto">${ICON_CAM}Foto</button>
+                ${noteChips(i)}
               </div>
               <div class="nend">
                 <span class="time">${i.nt ? '' : C.fmtTime(i.ts)}</span>
-                <button class="del" data-del aria-label="Excluir nota">${ICON_TRASH}</button>
+                <button class="more" data-more aria-label="Ações da nota">${ICON_MORE}</button>
               </div>
             </div>
-          </div>`).join('')}
+          </div>`; }).join('')}
       </section>`).join('');
   }
 
   function render() { renderHeader(); renderList(); }
 
   // ---------- notas ----------
-  function addItem(text, sector) {
+  function addItem(text, sector, prio) {
     const it = { id: uid(), sector: sector || S.currentSector, text, ts: Date.now() };
     if (S.currentDest) { it.dest = S.currentDest; it.status = 'open'; }
+    const p = prio || (it.dest ? S.currentPrio : null);
+    if (p) {
+      // falar a prioridade já encaminha (para o destino escolhido ou o primeiro da lista)
+      if (!it.dest) { it.dest = S.dests[0] || 'Manutenção'; it.status = 'open'; }
+      it.prio = p;
+    }
     cur().items.push(it);
     save();
   }
@@ -294,7 +375,17 @@
       setSector(r.sector);
       toast('Setor: ' + r.sector + (r.newSector ? ' (novo)' : ''));
     }
-    r.items.forEach(t => addItem(t));
+    let said = null;
+    r.items.forEach(t => {
+      const pr = C.parsePrio(t);
+      if (!pr.text) return;
+      if (pr.prio) said = pr.prio;
+      addItem(pr.text, null, pr.prio);
+    });
+    if (said) {
+      const last = cur().items[cur().items.length - 1];
+      toast('Prioridade ' + PRIO_L[said].toLowerCase() + ', encaminhada para ' + last.dest);
+    }
     save();
     render();
     scrollToEnd();
@@ -345,19 +436,28 @@
           <i style="background:var(--yellow-d)"></i><b>${esc(d)}</b>${open[d] ? `<small>${open[d]}</small>` : ''}
         </button>`).join('') +
       '<button class="tile add" data-add="1">Novo destino</button>';
+    $('destPrioWrap').style.display = destTarget ? 'none' : '';
+    $('destPrio').innerHTML = [['', 'Nenhuma'], ['alta', 'Alta'], ['media', 'Média'], ['baixa', 'Baixa']].map(([k, l]) =>
+      `<button class="chip${(S.currentPrio || '') === k ? ' on' : ''}${k ? ' p-' + k : ''}" data-p="${k}">${l}</button>`).join('');
   }
+  $('destPrio').onclick = e => {
+    const b = e.target.closest('[data-p]');
+    if (!b) return;
+    S.currentPrio = b.dataset.p || null;
+    save(); renderDestGrid(); renderHeader();
+  };
 
   function openDest(target) {
     destTarget = target;
     $('destTitle').textContent = target ? 'Encaminhar esta nota' : 'Encaminhar para';
     $('destTip').textContent = target ? '' :
-      'As próximas notas já saem encaminhadas e ficam em aberto até você conferir. Volte para "Nenhum" quando terminar.';
+      'As próximas notas já saem encaminhadas, com a prioridade escolhida, e ficam em aberto até você conferir. Volte para "Nenhum" quando terminar.';
     renderDestGrid();
     $('dlgDest').showModal();
   }
 
   function applyDest(name) {
-    if (!destTarget) { S.currentDest = name; return; }
+    if (!destTarget) { S.currentDest = name; if (!name) S.currentPrio = null; return; }
     const f = findItem(destTarget);
     if (!f) return;
     if (name) {
@@ -383,8 +483,11 @@
     }
     applyDest(name);
     save(); render();
-    if (!$('dlgPend').open) { /* nada */ } else renderPend();
+    if ($('dlgPend').open) renderPend();
     $('dlgDest').close();
+    // encaminhou uma nota sem prioridade: já pergunta a prioridade
+    const f = destTarget && name ? findItem(destTarget) : null;
+    if (f && !f.it.prio) openPrio(destTarget);
   };
 
   // ---------- pendências (conferir na volta) ----------
@@ -501,10 +604,10 @@
     save(); render(); renderPend();
   };
 
-  $('pendPdf').onclick = () => {
+  $('pendPdf').onclick = async () => {
     const rows = pendRows();
     if (!rows.length) { toast('Nada para colocar no relatório'); return; }
-    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
+    if (!(await preparePdf(rows.map(r => r.it)))) return;
     const now = Date.now();
     const heading = P.dest ? 'Relatório para ' + P.dest : 'Relatório de pendências';
     const nSec = new Set(rows.map(r => r.it.sector)).size;
@@ -517,6 +620,7 @@
     const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
       heading, embed: false,
       subtitle: `Emitido em ${C.fmtDate(now)}  •  ${what} em ${plural(nSec, 'setor', 'setores')}`,
+      summary: maintSummary(fake.items, P.dest),
       photo: pdfPhoto,
       meta: i => C.maintMeta(i, now, !P.dest)
     });
@@ -707,7 +811,7 @@
     const it = cur().items.find(i => i.id === id);
     const txt = t.textContent.trim();
     if (!it) return;
-    if (!txt) { delPhotoData(it.photos); cur().items = cur().items.filter(i => i.id !== id); save(); render(); return; }
+    if (!txt) { deleteItem(id); return; }
     if (txt !== it.text) { it.text = txt; save(); }
   });
   $('list').addEventListener('change', e => {
@@ -727,17 +831,73 @@
     if (pb) { openPrio(pb.closest('.note').dataset.id); return; }
     const fc = e.target.closest('[data-fc]');
     if (fc) { openFc(fc.closest('.note').dataset.id); return; }
-    const b = e.target.closest('[data-del]');
-    if (!b) return;
-    const id = b.closest('.note').dataset.id;
-    const gone = cur().items.find(i => i.id === id);
-    if (gone) delPhotoData(gone.photos);
-    cur().items = cur().items.filter(i => i.id !== id);
-    save(); render();
+    const mo = e.target.closest('[data-more]');
+    if (mo) openMore(mo.closest('.note').dataset.id);
   });
+
+  // Exclui com opção de desfazer (as fotos só são apagadas depois que o aviso some)
+  function deleteItem(id) {
+    const f = findItem(id);
+    if (!f) return;
+    const idx = f.v.items.indexOf(f.it);
+    f.v.items.splice(idx, 1);
+    save(); render();
+    if ($('dlgPend').open) renderPend();
+    let undone = false;
+    const killT = setTimeout(() => { if (!undone) delPhotoData(f.it.photos); }, 6500);
+    toast('Nota excluída', 'Desfazer', () => {
+      undone = true;
+      clearTimeout(killT);
+      if (!S.vistorias.includes(f.v)) return;
+      f.v.items.splice(Math.min(idx, f.v.items.length), 0, f.it);
+      save(); render();
+      if ($('dlgPend').open) renderPend();
+    });
+  }
+
+  // ---------- menu de ações da nota ----------
+  let moreTarget = null;
+  function openMore(id) {
+    const f = findItem(id);
+    if (!f) return;
+    moreTarget = id;
+    const it = f.it, open = isOpen(it);
+    $('moreTip').textContent = it.text.length > 90 ? it.text.slice(0, 90) + '…' : it.text;
+    const rows = [
+      ['dest', it.dest ? 'Mudar encaminhamento' : 'Encaminhar para a Manutenção ou outra área'],
+      it.dest && ['prio', it.prio ? 'Prioridade: ' + PRIO_L[it.prio] : 'Definir prioridade'],
+      open && ['fc', it.forecast ? 'Previsão: ' + C.fmtDate(it.forecast) : 'Previsão de resolução'],
+      ['photo', 'Adicionar foto'],
+      open && ['done', 'Marcar como resolvida'],
+      it.dest && !open && ['reopen', 'Reabrir'],
+      ['del', 'Excluir nota']
+    ].filter(Boolean);
+    $('moreList').innerHTML = rows.map(([k, l]) => `<button class="mrow${k === 'del' ? ' red' : ''}" data-m="${k}">${esc(l)}</button>`).join('');
+    $('dlgMore').showModal();
+  }
+  $('moreClose').onclick = () => $('dlgMore').close();
+  $('moreList').onclick = e => {
+    const b = e.target.closest('[data-m]');
+    if (!b) return;
+    const id = moreTarget, k = b.dataset.m, f = findItem(id);
+    $('dlgMore').close();
+    if (!f) return;
+    if (k === 'dest') openDest(id);
+    else if (k === 'prio') openPrio(id);
+    else if (k === 'fc') openFc(id);
+    else if (k === 'photo') openPhoto(id);
+    else if (k === 'del') deleteItem(id);
+    else if (k === 'done' || k === 'reopen') {
+      if (k === 'done') { f.it.status = 'done'; f.it.doneAt = Date.now(); toast('Marcada como resolvida'); }
+      else { f.it.status = 'open'; delete f.it.doneAt; }
+      save(); render();
+    }
+  };
 
   // ---------- histórico ----------
   function renderHist() {
+    $('bkInfo').textContent = backupInfo();
+    $('bkInfo').classList.toggle('due', backupDue());
     const list = S.vistorias.slice().sort((a, b) => b.created - a.created);
     $('histList').innerHTML = list.map(v => `
       <div class="hist${v.id === S.currentId ? ' cur' : ''}" data-id="${v.id}">
@@ -865,41 +1025,130 @@
   // ---------- PDF ----------
   let pdfBlob = null, pdfName = '';
 
-  function showPdf(doc, name) {
-    pdfBlob = doc.output('blob');
+  let fileType = 'application/pdf';
+  function showFile(blob, name, type, head) {
+    pdfBlob = blob;
     pdfName = name;
-    const canShare = navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], pdfName, { type: 'application/pdf' })] });
+    fileType = type;
+    const canShare = navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], pdfName, { type })] });
     $('pdfShare').style.display = canShare ? '' : 'none';
-    $('pdfInfo').textContent = pdfName + ', ' + Math.max(1, Math.round(pdfBlob.size / 1024)) + ' KB';
+    $('pdfView').style.display = type === 'application/pdf' ? '' : 'none';
+    $('pdfHead').textContent = head;
+    const kb = pdfBlob.size / 1024;
+    $('pdfInfo').textContent = pdfName + ', ' + (kb > 1024 ? (kb / 1024).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(kb)) + ' KB');
     $('dlgPdf').showModal();
+  }
+  function showPdf(doc, name) { showFile(doc.output('blob'), name, 'application/pdf', 'PDF pronto'); }
+  function delivered() {
+    if (fileType !== 'application/json') return;
+    S.lastBackup = Date.now();
+    save(); renderHeader();
+    if ($('dlgHist').open) renderHist();
   }
 
   function mkName(prefix, base, ts) {
     return prefix + '_' + isoLocal(ts) + '_' + C.norm(base).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '.pdf';
   }
 
-  function fullPdf() {
+  // ---------- resumos que vão no topo dos PDFs ----------
+  const RED = [200, 40, 31], ORANGE = [200, 120, 0];
+  const W_COLS = [52, 21, 21, 21, 21, 21, 21];
+  const hot = (n, c) => (n ? { v: n, c: c || RED, b: true } : 0);
+  function avgTxt(a) {
+    if (a < 1) return 'menos de 1 dia';
+    const t = a.toFixed(1).replace('.', ',').replace(/,0$/, '');
+    return t + (t === '1' ? ' dia' : ' dias');
+  }
+  function resolutionNotes(dests) {
+    const out = [];
+    dests.forEach(d => {
+      const st = C.resolutionStats(allTracked().map(x => x.it).filter(i => i.dest === d));
+      if (!st.n) return;
+      out.push(`${d}: tempo médio de resolução de ${avgTxt(st.avg)} (${plural(st.n, 'resolvida', 'resolvidas')} no histórico)` +
+        (st.withFc ? `, ${st.onTime} de ${st.withFc} dentro da previsão.` : '.'));
+    });
+    return out;
+  }
+
+  function directorSummary(v) {
+    if (!v.items.length) return null;
+    const rows = [], tot = [0, 0, 0, 0, 0, 0];
+    C.groupItems(v.items, S.sectors).forEach(g => {
+      const its = g.items;
+      const c = [
+        its.length,
+        its.filter(i => i.dest).length,
+        its.filter(isOpen).length,
+        its.filter(i => { const f = fcState(i); return f && f.late; }).length,
+        its.filter(i => isOpen(i) && i.prio === 'alta').length,
+        its.filter(i => i.dest && i.status === 'done').length
+      ];
+      c.forEach((n, k) => { tot[k] += n; });
+      rows.push([g.name, c[0], c[1], c[2], hot(c[3]), hot(c[4]), c[5]]);
+    });
+    const notes = [];
+    const old = allTracked().filter(x => x.v.id !== v.id && isOpen(x.it));
+    if (old.length) {
+      const ol = old.filter(x => { const f = fcState(x.it); return f && f.late; }).length;
+      notes.push({ text: `Pendências de visitas anteriores ainda abertas: ${old.length}` + (ol ? ` (${plural(ol, 'atrasada', 'atrasadas')}).` : '.'), c: ol ? RED : null, b: !!ol });
+    }
+    resolutionNotes(S.dests.filter(d => allTracked().some(x => x.it.dest === d))).forEach(t => notes.push(t));
+    return {
+      title: 'Resumo da vistoria', widths: W_COLS,
+      head: ['Setor', 'Notas', 'Encaminhadas', 'Abertas', 'Atrasadas', 'Prior. alta', 'Resolvidas'],
+      rows, total: rows.length > 1 ? ['Total', ...tot] : null, notes
+    };
+  }
+
+  function maintSummary(items, dest) {
+    const rows = [], tot = [0, 0, 0, 0, 0, 0];
+    C.groupItems(items, S.sectors).forEach(g => {
+      const op = g.items.filter(isOpen);
+      const c = [
+        g.items.length,
+        op.filter(i => { const f = fcState(i); return f && f.late; }).length,
+        op.filter(i => i.prio === 'alta').length,
+        op.filter(i => i.prio === 'media').length,
+        op.filter(i => i.prio === 'baixa').length,
+        op.filter(i => !i.forecast).length
+      ];
+      c.forEach((n, k) => { tot[k] += n; });
+      rows.push([g.name, c[0], hot(c[1]), hot(c[2]), hot(c[3], ORANGE), c[4], c[5]]);
+    });
+    return {
+      title: 'Resumo', widths: W_COLS,
+      head: ['Setor', 'Itens', 'Atrasadas', 'Alta', 'Média', 'Baixa', 'Sem previsão'],
+      rows, total: rows.length > 1 ? ['Total', ...tot] : null,
+      notes: resolutionNotes(dest ? [dest] : S.dests)
+    };
+  }
+
+  async function fullPdf() {
     const v = cur();
+    if (!(await preparePdf(v.items))) return;
     const doc = C.buildPdf(window.jspdf.jsPDF, v, S.sectors, {
+      summary: directorSummary(v),
       photo: pdfPhoto,
       meta: i => C.vistoriaMeta(i, Date.now())
     });
     showPdf(doc, mkName('Vistoria', v.title, v.created));
   }
 
-  function sectorPdf(sector, withOld) {
+  async function sectorPdf(sector, withOld) {
     const v = cur(), now = Date.now();
     const own = v.items.filter(i => i.sector === sector);
     const old = withOld ? allTracked().filter(x => x.v.id !== v.id && isOpen(x.it) && x.it.sector === sector).map(x => x.it) : [];
     const items = own.concat(old).map(i => Object.assign({}, i, { sector }));
     if (!items.length) { toast('Esse setor não tem notas'); return; }
     items.sort((a, b) => (PRANK[a.prio] ?? 3) - (PRANK[b.prio] ?? 3) || a.ts - b.ts);
+    if (!(await preparePdf(items))) return;
     const fake = { title: v.title, created: v.created, items };
     const doc = C.buildPdf(window.jspdf.jsPDF, fake, S.sectors, {
       heading: 'Relatório do setor ' + sector, embed: false,
       subtitle: (v.title.includes(C.fmtDate(v.created)) ? v.title : v.title + '  •  ' + C.fmtDate(v.created)) + '  •  ' + plural(items.length, 'apontamento', 'apontamentos') +
         (old.length ? ' (' + plural(old.length, 'de visita anterior', 'de visitas anteriores') + ')' : ''),
       photo: pdfPhoto,
+      signature: 'Ciente do encarregado do setor ' + sector,
       meta: i => C.vistoriaMeta(i, now)
     });
     showPdf(doc, mkName('Setor-' + C.norm(sector).replace(/[^a-z0-9]+/g, '-'), v.title, v.created));
@@ -907,7 +1156,7 @@
 
   $('btnPdf').onclick = () => {
     const v = cur();
-    if (!window.jspdf) { toast('A biblioteca de PDF não carregou'); return; }
+    needPdf().catch(() => {});
     const own = {};
     v.items.forEach(i => { own[i.sector] = (own[i.sector] || 0) + 1; });
     const oldSec = new Set(allTracked().filter(x => x.v.id !== v.id && isOpen(x.it)).map(x => x.it.sector));
@@ -937,12 +1186,68 @@
     a.download = pdfName;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    delivered();
   };
   $('pdfView').onclick = () => { window.open(URL.createObjectURL(pdfBlob), '_blank'); };
   $('pdfShare').onclick = async () => {
     try {
-      await navigator.share({ files: [new File([pdfBlob], pdfName, { type: 'application/pdf' })], title: cur().title });
+      await navigator.share({ files: [new File([pdfBlob], pdfName, { type: fileType })], title: fileType === 'application/pdf' ? cur().title : 'Backup da vistoria' });
+      delivered();
     } catch (e) { /* cancelado */ }
+  };
+
+  // ---------- backup ----------
+  const BK_DAYS = 7;
+  function backupDue() {
+    if (!S.vistorias.some(v => v.items.length)) return false;
+    return !S.lastBackup || Date.now() - S.lastBackup > BK_DAYS * DAY;
+  }
+  function backupInfo() {
+    if (!S.lastBackup) return 'Você ainda não fez backup. Tudo fica só neste celular: se limpar os dados do navegador ou trocar de aparelho, perde as notas e fotos.';
+    const d = Math.floor((Date.now() - S.lastBackup) / DAY);
+    return 'Último backup ' + (d === 0 ? 'hoje' : d === 1 ? 'ontem' : 'há ' + d + ' dias') + ' (' + C.fmtDate(S.lastBackup) + ').' +
+      (backupDue() ? ' Faça um novo para não perder nada.' : '');
+  }
+  $('btnBackup').onclick = async () => {
+    toast('Preparando backup…');
+    const photos = {};
+    try {
+      for (const n of STORES) photos[n] = (await dbRun([n], 'readonly', t => t.objectStore(n).getAll())) || [];
+    } catch (e) { toast('Não consegui ler as fotos para o backup'); return; }
+    const now = Date.now();
+    const data = JSON.stringify({ app: 'vistoria-por-voz', version: 2, exported: now, state: Object.assign({}, S, { lastBackup: now }), photos });
+    $('dlgHist').close();
+    showFile(new Blob([data], { type: 'application/json' }), 'Backup_Vistoria_' + isoLocal(now) + '.json', 'application/json', 'Backup pronto');
+    $('pdfInfo').textContent += '. Guarde no Drive ou mande para você no WhatsApp.';
+  };
+  $('btnRestore').onclick = () => $('fileRestore').click();
+  $('fileRestore').onchange = async e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    let d;
+    try { d = JSON.parse(await f.text()); } catch (err) { toast('Esse arquivo não é um backup do app'); return; }
+    if (!d || d.app !== 'vistoria-por-voz' || !d.state || !Array.isArray(d.state.vistorias)) { toast('Esse arquivo não é um backup do app'); return; }
+    const nV = d.state.vistorias.length, nN = d.state.vistorias.reduce((a, v) => a + (v.items || []).length, 0);
+    const nP = (d.photos && d.photos.thumb || []).length;
+    if (!confirm('Restaurar o backup de ' + C.fmtDate(d.exported || Date.now()) + '?\n\n' + plural(nV, 'vistoria', 'vistorias') + ', ' + plural(nN, 'nota', 'notas') + ', ' + plural(nP, 'foto', 'fotos') +
+      '.\n\nIsso SUBSTITUI tudo o que está no app agora.')) return;
+    try {
+      await dbRun(STORES, 'readwrite', t => {
+        STORES.forEach(n => {
+          const st = t.objectStore(n);
+          st.clear();
+          ((d.photos && d.photos[n]) || []).forEach(r => { if (r && r.id && r.d) st.put(r); });
+        });
+      });
+    } catch (err) { toast('Não consegui restaurar as fotos'); return; }
+    const st = d.state;
+    if (!Array.isArray(st.dests) || !st.dests.length) st.dests = ['Manutenção'];
+    if (!Array.isArray(st.sectors) || !st.sectors.length) st.sectors = C.DEFAULT_SECTORS.slice();
+    if (!st.vistorias.length) { const v = newVistoria(); st.vistorias.push(v); st.currentId = v.id; }
+    if (!st.vistorias.some(v => v.id === st.currentId)) st.currentId = st.vistorias[0].id;
+    try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (err) { toast('Sem espaço para restaurar'); return; }
+    location.reload();
   };
 
   // ---------- fotos: escolher origem e ver ----------
